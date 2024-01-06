@@ -17,12 +17,13 @@
 
 namespace ROCKSDB_NAMESPACE {
 
+//ZonedBlockDeviceBackend 的实现
 class ZbdlibBackend : public ZonedBlockDeviceBackend {
  private:
-  std::string filename_;
-  int read_f_;
-  int read_direct_f_;
-  int write_f_;
+  std::string filename_;   //设备文件名 应该是nvme0n1
+  int read_f_;             //读文件描述符？
+  int read_direct_f_;      //读直通文件描述符？
+  int write_f_;            //写文件描述符？
 
  public:
   explicit ZbdlibBackend(std::string bdevname);
@@ -41,6 +42,7 @@ class ZbdlibBackend : public ZonedBlockDeviceBackend {
   int Read(char *buf, int size, uint64_t pos, bool direct);
   int Write(char *data, uint32_t size, uint64_t pos);
   int InvalidateCache(uint64_t pos, uint64_t size);
+
 
   bool ZoneIsSwr(std::unique_ptr<ZoneList> &zones, unsigned int idx) {
     struct zbd_zone *z = &((struct zbd_zone *)zones->GetData())[idx];

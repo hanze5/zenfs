@@ -238,6 +238,7 @@ IOStatus ZoneFsBackend::Reset(uint64_t start, bool *offline,
 
   std::string filename = LBAToZoneFile(start);
 
+  //将filename对应的文件大小设置为0，表示重置该区域，并将结果存储在ret中
   ret = truncate(filename.c_str(), 0);
   if (ret) {
     return IOStatus::IOError("Zone reset failed: " + ErrorToString(errno));
@@ -266,7 +267,7 @@ IOStatus ZoneFsBackend::Finish(uint64_t start) {
 
   std::string filename = LBAToZoneFile(start);
 
-  ret = truncate(filename.c_str(), zone_sz_);
+  ret = truncate(filename.c_str(), zone_sz_);//使用 truncate 函数将该文件的大小设置为 zone_sz_，这个值通常是区域的大小
   if (ret)
     return IOStatus::IOError("Zone finish failed: " + ErrorToString(errno));
   PutZoneFile(start, O_WRONLY);
@@ -292,7 +293,7 @@ void ZoneFsBackend::PutZoneFile(uint64_t start, int flags) {
   uint64_t zone_nr = start / zone_sz_;
 
   if (flags & O_WRONLY) {
-    wr_fds_.Put(zone_nr);
+    wr_fds_.Put(zone_nr);//将指定的区域从写文件描述符缓存中移除
   }
 }
 

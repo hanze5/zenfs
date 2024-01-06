@@ -27,21 +27,24 @@
 
 namespace ROCKSDB_NAMESPACE {
 
-class ZoneExtent {
+/**
+ * ZenFS则采用了划分extent方式来对目标文件进行切片管理，每个extent切片对应Zone内一段物理连续的空间(extent不会跨Zone进行存储)，extent列表则记录到每个文件对应的ZoneFile实例(类似内核的inode)
+*/
+class ZoneExtent { 
  public:
   uint64_t start_;
   uint64_t length_;
   Zone* zone_;
 
   explicit ZoneExtent(uint64_t start, uint64_t length, Zone* zone);
-  Status DecodeFrom(Slice* input);
+  Status DecodeFrom(Slice* input);//这个方法用于从一个 Slice 对象中解码一个 ZoneExtent 对象。如果解码成功，它会返回一个 Status 对象，表示操作的状态
   void EncodeTo(std::string* output);
   void EncodeJson(std::ostream& json_stream);
 };
 
 class ZoneFile;
 
-/* Interface for persisting metadata for files */
+/* Interface for persisting metadata for files 一个名为 MetadataWriter 的类，它是一个接口，用于持久化文件的元数据*/
 class MetadataWriter {
  public:
   virtual ~MetadataWriter();
@@ -52,61 +55,61 @@ class ZoneFile {
  private:
   const uint64_t NO_EXTENT = 0xffffffffffffffff;
 
-  ZonedBlockDevice* zbd_;
+  ZonedBlockDevice* zbd_;             //表示一个区块设备
 
-  std::vector<ZoneExtent*> extents_;
-  std::vector<std::string> linkfiles_;
+  std::vector<ZoneExtent*> extents_;  //表示zonefile包含的extent
+  std::vector<std::string> linkfiles_;//可能表示一系列的链接文件
 
-  Zone* active_zone_;
-  uint64_t extent_start_ = NO_EXTENT;
-  uint64_t extent_filepos_ = 0;
+  Zone* active_zone_;                 //示当前活动的区域 文件所属区域？   
+  uint64_t extent_start_ = NO_EXTENT; //表示extent的起始位置。NO_EXTENT 可能是一个特殊的值，表示没有范围。
+  uint64_t extent_filepos_ = 0;       //extent在文件中的位置
 
-  Env::WriteLifeTimeHint lifetime_;
+  Env::WriteLifeTimeHint lifetime_;   //写入操作的生命周期
   IOType io_type_; /* Only used when writing */
-  uint64_t file_size_;
+  uint64_t file_size_;                 
   uint64_t file_id_;
 
-  uint32_t nr_synced_extents_ = 0;
-  bool open_for_wr_ = false;
-  std::mutex open_for_wr_mtx_;
+  uint32_t nr_synced_extents_ = 0;     //已同步的范围数量，初始值为0
+  bool open_for_wr_ = false;           //是否打开了写入权限，初始值为false
+  std::mutex open_for_wr_mtx_;         //
 
-  time_t m_time_;
-  bool is_sparse_ = false;
-  bool is_deleted_ = false;
+  time_t m_time_;                      //文件上次被修改的时间
+  bool is_sparse_ = false;             //文件是否是稀疏文件，初始值为false
+  bool is_deleted_ = false;            //文件是否已被删除，初始值为false
 
-  MetadataWriter* metadata_writer_ = NULL;
+  MetadataWriter* metadata_writer_ = NULL;//用于写入文件的元数据，初始值为NULL
 
-  std::mutex writer_mtx_;
-  std::atomic<int> readers_{0};
+  std::mutex writer_mtx_;              //用于保护 metadata_writer_ 的访问
+  std::atomic<int> readers_{0};        //当前读取文件的读取器数量，初始值为0
 
  public:
-  static const int SPARSE_HEADER_SIZE = 8;
+  static const int SPARSE_HEADER_SIZE = 8;//可能表示的是稀疏文件头部信息的大小
 
   explicit ZoneFile(ZonedBlockDevice* zbd, uint64_t file_id_,
                     MetadataWriter* metadata_writer);
 
   virtual ~ZoneFile();
 
-  void AcquireWRLock();
-  bool TryAcquireWRLock();
-  void ReleaseWRLock();
+  void AcquireWRLock();            //获取写锁
+  bool TryAcquireWRLock();         //尝试获取写锁
+  void ReleaseWRLock();            //释放写锁
 
-  IOStatus CloseWR();
-  bool IsOpenForWR();
+  IOStatus CloseWR();              //关闭写操作 包括：持久化元数据 释放写锁  关闭当前activezone
+  bool IsOpenForWR();              //判断是否获取了写入权限
 
-  IOStatus PersistMetadata();
+  IOStatus PersistMetadata();      //用于持久化元数据
 
-  IOStatus Append(void* buffer, int data_size);
-  IOStatus BufferedAppend(char* data, uint32_t size);
-  IOStatus SparseAppend(char* data, uint32_t size);
-  IOStatus SetWriteLifeTimeHint(Env::WriteLifeTimeHint lifetime);
+  IOStatus Append(void* buffer, int data_size);//本质是调用  AllocateNewZone() 与 zone->Append()
+  IOStatus BufferedAppend(char* data, uint32_t size);//
+  IOStatus SparseAppend(char* data, uint32_t size);//以字节对齐的方式进行稀疏写入，同时在内联元数据中预留8字节的空间用于大小头部
+  IOStatus SetWriteLifeTimeHint(Env::WriteLifeTimeHint lifetime);////设置zonefile的生命周期
   void SetIOType(IOType io_type);
-  std::string GetFilename();
-  time_t GetFileModificationTime();
+  std::string GetFilename();           //返回linkfiles_[0]
+  time_t GetFileModificationTime();    //获取文件修改时间
   void SetFileModificationTime(time_t mt);
-  uint64_t GetFileSize();
-  void SetFileSize(uint64_t sz);
-  void ClearExtents();
+  uint64_t GetFileSize();              //获取文件大小
+  void SetFileSize(uint64_t sz);       //设置文件大小
+  void ClearExtents();                 //清除所有文件的extents
 
   uint32_t GetBlockSize() { return zbd_->GetBlockSize(); }
   ZonedBlockDevice* GetZbd() { return zbd_; }
@@ -114,24 +117,24 @@ class ZoneFile {
   Env::WriteLifeTimeHint GetWriteLifeTimeHint() { return lifetime_; }
 
   IOStatus PositionedRead(uint64_t offset, size_t n, Slice* result,
-                          char* scratch, bool direct);
-  ZoneExtent* GetExtent(uint64_t file_offset, uint64_t* dev_offset);
-  void PushExtent();
+                          char* scratch, bool direct);//从指定的偏移量开始读取一定数量的数据 本质是循环调用 zbd_->Read
+  ZoneExtent* GetExtent(uint64_t file_offset, uint64_t* dev_offset);//获取与给定文件偏移量对应的extent
+  void PushExtent(); //它用于将新的extent添加到extents_列表中 一般就是有新数据要写入需要开辟空间了
   IOStatus AllocateNewZone();
 
-  void EncodeTo(std::string* output, uint32_t extent_start);
+  void EncodeTo(std::string* output, uint32_t extent_start);//它将ZoneFile对象的状态编码到一个字符串中
   void EncodeUpdateTo(std::string* output) {
     EncodeTo(output, nr_synced_extents_);
   };
-  void EncodeSnapshotTo(std::string* output) { EncodeTo(output, 0); };
-  void EncodeJson(std::ostream& json_stream);
+  void EncodeSnapshotTo(std::string* output) { EncodeTo(output, 0); };//调用EncodeTo函数将ZoneFile对象的状态编码到一个字符串中
+  void EncodeJson(std::ostream& json_stream);//它将ZoneFile对象的状态编码为JSON格式
   void MetadataSynced() { nr_synced_extents_ = extents_.size(); };
   void MetadataUnsynced() { nr_synced_extents_ = 0; };
 
   IOStatus MigrateData(uint64_t offset, uint32_t length, Zone* target_zone);
 
-  Status DecodeFrom(Slice* input);
-  Status MergeUpdate(std::shared_ptr<ZoneFile> update, bool replace);
+  Status DecodeFrom(Slice* input);//从输入的Slice对象中解码ZoneFile对象的状态
+  Status MergeUpdate(std::shared_ptr<ZoneFile> update, bool replace);//用于将更新的ZoneFile对象的状态合并到当前对象中
 
   uint64_t GetID() { return file_id_; }
 
@@ -143,19 +146,19 @@ class ZoneFile {
 
   IOStatus Recover();
 
-  void ReplaceExtentList(std::vector<ZoneExtent*> new_list);
-  void AddLinkName(const std::string& linkfile);
-  IOStatus RemoveLinkName(const std::string& linkfile);
-  IOStatus RenameLink(const std::string& src, const std::string& dest);
-  uint32_t GetNrLinks() { return linkfiles_.size(); }
+  void ReplaceExtentList(std::vector<ZoneExtent*> new_list);//接受一个ZoneExtent对象的向量new_list作为参数。这个函数的主要功能是替换ZoneFile对象的extents_成员变量
+  void AddLinkName(const std::string& linkfile);////加入一个新的LinkName
+  IOStatus RemoveLinkName(const std::string& linkfile);////把名为src的linkfile重命名为dest
+  IOStatus RenameLink(const std::string& src, const std::string& dest);////删除名为 <参数> 的linkfile
+  uint32_t GetNrLinks() { return linkfiles_.size(); }  //
   const std::vector<std::string>& GetLinkFiles() const { return linkfiles_; }
 
-  IOStatus InvalidateCache(uint64_t pos, uint64_t size);
+  IOStatus InvalidateCache(uint64_t pos, uint64_t size);    //使缓存失效
 
  private:
   void ReleaseActiveZone();
   void SetActiveZone(Zone* zone);
-  IOStatus CloseActiveZone();
+  IOStatus CloseActiveZone();            //关闭当前活动的区域
 
  public:
   std::shared_ptr<ZenFSMetrics> GetZBDMetrics() { return zbd_->GetMetrics(); };
@@ -177,6 +180,8 @@ class ZoneFile {
    private:
     ZoneFile* zfile_;
   };
+
+
   class WriteLock {
    public:
     WriteLock(ZoneFile* zfile) : zfile_(zfile) {
@@ -214,48 +219,48 @@ class ZonedWritableFile : public FSWritableFile {
     return PositionedAppend(data, offset, opts, dbg);
   }
   virtual IOStatus Truncate(uint64_t size, const IOOptions& options,
-                            IODebugContext* dbg) override;
+                            IODebugContext* dbg) override;//将文件截断到指定的大小
   virtual IOStatus Close(const IOOptions& options,
-                         IODebugContext* dbg) override;
+                         IODebugContext* dbg) override;//关闭文件
   virtual IOStatus Flush(const IOOptions& options,
                          IODebugContext* dbg) override;
   virtual IOStatus Sync(const IOOptions& options, IODebugContext* dbg) override;
   virtual IOStatus RangeSync(uint64_t offset, uint64_t nbytes,
                              const IOOptions& options,
-                             IODebugContext* dbg) override;
+                             IODebugContext* dbg) override;//同步文件的指定范围
   virtual IOStatus Fsync(const IOOptions& options,
                          IODebugContext* dbg) override;
 
-  bool use_direct_io() const override { return !buffered; }
-  bool IsSyncThreadSafe() const override { return true; };
-  size_t GetRequiredBufferAlignment() const override {
+  bool use_direct_io() const override { return !buffered; } //如果不启用缓存 将返回真
+  bool IsSyncThreadSafe() const override { return true; };  //同步操作是否线程安全
+  size_t GetRequiredBufferAlignment() const override {      //返回所需的缓冲区对其大小 这里返回的是zonefile->blocksize
     return zoneFile_->GetBlockSize();
   }
-  void SetWriteLifeTimeHint(Env::WriteLifeTimeHint hint) override;
+  void SetWriteLifeTimeHint(Env::WriteLifeTimeHint hint) override;////设置zonefile的生命周期
   virtual Env::WriteLifeTimeHint GetWriteLifeTimeHint() override {
     return zoneFile_->GetWriteLifeTimeHint();
   }
 
  private:
-  IOStatus BufferedWrite(const Slice& data);
-  IOStatus FlushBuffer();
-  IOStatus DataSync();
-  IOStatus CloseInternal();
+  IOStatus BufferedWrite(const Slice& data);//将数据写入缓冲区。
+  IOStatus FlushBuffer();                   //调用DataSync()将缓冲区数据刷新到磁盘
+  IOStatus DataSync();                      //同步数据到磁盘
+  IOStatus CloseInternal();                 //关闭文件
 
-  bool buffered;
-  char* sparse_buffer;
-  char* buffer;
-  size_t buffer_sz;
-  uint32_t block_sz;
-  uint32_t buffer_pos;
-  uint64_t wp;
-  int write_temp;
-  bool open;
+  bool buffered;                            //是否使用缓冲区写入
+  char* sparse_buffer;                      //稀疏缓冲区指针
+  char* buffer;                             //缓冲区指针
+  size_t buffer_sz;                         //缓冲区大小
+  uint32_t block_sz;                        //块大小
+  uint32_t buffer_pos;                      //缓冲区当前位置
+  uint64_t wp;                              //写指针位置
+  int write_temp;                           //临时写入的变量
+  bool open;                                //文件是否打开
 
-  std::shared_ptr<ZoneFile> zoneFile_;
-  MetadataWriter* metadata_writer_;
+  std::shared_ptr<ZoneFile> zoneFile_;       //一个指向ZoneFile对象的共享指针。
+  MetadataWriter* metadata_writer_;          //一个指向MetadataWriter对象的指针
 
-  std::mutex buffer_mtx_;
+  std::mutex buffer_mtx_;                    //一个互斥锁，用于保护缓冲区的并发访问。
 };
 
 class ZonedSequentialFile : public FSSequentialFile {

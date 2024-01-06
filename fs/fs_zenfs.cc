@@ -33,6 +33,7 @@
 
 namespace ROCKSDB_NAMESPACE {
 
+//主要功能是从输入的 Slice 对象中解码超级块的信息
 Status Superblock::DecodeFrom(Slice* input) {
   if (input->size() != ENCODED_SIZE) {
     return Status::Corruption("ZenFS Superblock",
@@ -69,7 +70,7 @@ Status Superblock::DecodeFrom(Slice* input) {
 
   return Status::OK();
 }
-
+//将超级块的信息编码到输出的 std::string 对象中
 void Superblock::EncodeTo(std::string* output) {
   sequence_++; /* Ensure that this superblock representation is unique */
   output->clear();
@@ -88,6 +89,7 @@ void Superblock::EncodeTo(std::string* output) {
   assert(output->length() == ENCODED_SIZE);
 }
 
+//报告超级块信息
 void Superblock::GetReport(std::string* reportString) {
   reportString->append("Magic:\t\t\t\t");
   PutFixed32(reportString, magic_);
@@ -119,6 +121,7 @@ void Superblock::GetReport(std::string* reportString) {
   reportString->append(zenfs_version);
 }
 
+//检查 ZenFS 超级块的一些属性是否与 zbd 兼容 主要检查 块大小 zone大小 zone数量能不能对的上
 Status Superblock::CompatibleWith(ZonedBlockDevice* zbd) {
   if (block_size_ != zbd->GetBlockSize())
     return Status::Corruption("ZenFS Superblock",
@@ -132,6 +135,7 @@ Status Superblock::CompatibleWith(ZonedBlockDevice* zbd) {
   return Status::OK();
 }
 
+//将 slice 中的数据添加到元数据日志中
 IOStatus ZenMetaLog::AddRecord(const Slice& slice) {
   uint32_t record_sz = slice.size();
   const char* data = slice.data();
@@ -196,6 +200,7 @@ IOStatus ZenMetaLog::Read(Slice* slice) {
   return IOStatus::OK();
 }
 
+//作用是从元数据日志中读取记录 record返回读取的记录，而scratch在函数执行过程中用于存储临时数据
 IOStatus ZenMetaLog::ReadRecord(Slice* record, std::string* scratch) {
   Slice header;
   uint32_t record_sz = 0;
@@ -269,10 +274,12 @@ ZenFS::~ZenFS() {
   delete zbd_;
 }
 
+//不同应用程序统一垃圾回收可以吗  应该不行
 void ZenFS::GCWorker() {
   while (run_gc_worker_) {
-    usleep(1000 * 1000 * 10);
+    usleep(1000 * 1000 * 10);//10s一次垃圾回收
 
+    //计算空间使用情况 检查空闲空间
     uint64_t non_free = zbd_->GetUsedSpace() + zbd_->GetReclaimableSpace();
     uint64_t free = zbd_->GetFreeSpace();
     uint64_t free_percent = (100 * free) / (free + non_free);
@@ -284,11 +291,12 @@ void ZenFS::GCWorker() {
     options.zone_ = 1;
     options.zone_file_ = 1;
     options.log_garbage_ = 1;
-
+    //获取快照
     GetZenFSSnapshot(snapshot, options);
-
+    //计算阈值
     uint64_t threshold = (100 - GC_SLOPE * (GC_START_LEVEL - free_percent));
     std::set<uint64_t> migrate_zones_start;
+    //选择迁移区域
     for (const auto& zone : snapshot.zones_) {
       if (zone.capacity == 0) {
         uint64_t garbage_percent_approx =
@@ -299,7 +307,7 @@ void ZenFS::GCWorker() {
         }
       }
     }
-
+    //选择迁移extent
     std::vector<ZoneExtentSnapshot*> migrate_exts;
     for (auto& ext : snapshot.extents_) {
       if (migrate_zones_start.find(ext.zone_start) !=
@@ -307,7 +315,7 @@ void ZenFS::GCWorker() {
         migrate_exts.push_back(&ext);
       }
     }
-
+    //执行垃圾回收操作
     if (migrate_exts.size() > 0) {
       IOStatus s;
       Info(logger_, "Garbage collecting %d extents \n",
@@ -320,11 +328,13 @@ void ZenFS::GCWorker() {
   }
 }
 
+//修复ZenFS文件系统中的文件
 IOStatus ZenFS::Repair() {
+  //遍历所有file
   std::map<std::string, std::shared_ptr<ZoneFile>>::iterator it;
   for (it = files_.begin(); it != files_.end(); it++) {
     std::shared_ptr<ZoneFile> zFile = it->second;
-    if (zFile->HasActiveExtent()) {
+    if (zFile->HasActiveExtent()) {//找到活动extent 去recover
       IOStatus s = zFile->Recover();
       if (!s.ok()) return s;
     }
@@ -337,7 +347,7 @@ std::string ZenFS::FormatPathLexically(fs::path filepath) {
   fs::path ret = fs::path("/") / filepath.lexically_normal();
   return ret.string();
 }
-
+//记录ZenFS文件系统中的文件信息
 void ZenFS::LogFiles() {
   std::map<std::string, std::shared_ptr<ZoneFile>>::iterator it;
   uint64_t total_size = 0;
@@ -363,7 +373,7 @@ void ZenFS::LogFiles() {
   Info(logger_, "Sum of all files: %lu MB of data \n",
        total_size / (1024 * 1024));
 }
-
+//挨个调用每个 释放每一个 std::shared_ptr<ZoneFile>
 void ZenFS::ClearFiles() {
   std::map<std::string, std::shared_ptr<ZoneFile>>::iterator it;
   std::lock_guard<std::mutex> file_lock(files_mtx_);
@@ -371,7 +381,7 @@ void ZenFS::ClearFiles() {
   files_.clear();
 }
 
-/* Assumes that files_mutex_ is held */
+/* Assumes that files_mutex_ is held ZenFS文件系统的快照写入元数据日志*/
 IOStatus ZenFS::WriteSnapshotLocked(ZenMetaLog* meta_log) {
   IOStatus s;
   std::string snapshot;
@@ -387,6 +397,7 @@ IOStatus ZenFS::WriteSnapshotLocked(ZenMetaLog* meta_log) {
   return s;
 }
 
+//向元数据日志中写入结束记录
 IOStatus ZenFS::WriteEndRecord(ZenMetaLog* meta_log) {
   std::string endRecord;
 
@@ -394,7 +405,7 @@ IOStatus ZenFS::WriteEndRecord(ZenMetaLog* meta_log) {
   return meta_log->AddRecord(endRecord);
 }
 
-/* Assumes the files_mtx_ is held */
+/* Assumes the files_mtx_ is held 滚动元数据区域 涉及到meta zone的分配*/
 IOStatus ZenFS::RollMetaZoneLocked() {
   std::unique_ptr<ZenMetaLog> new_meta_log, old_meta_log;
   Zone* new_meta_zone = nullptr;
@@ -443,6 +454,7 @@ IOStatus ZenFS::RollMetaZoneLocked() {
   return s;
 }
 
+//调用WriteSnapshotLocked将ZenFS文件系统的快照持久化 zone写满将会调用RollMetaZoneLocked
 IOStatus ZenFS::PersistSnapshot(ZenMetaLog* meta_writer) {
   IOStatus s;
 
@@ -463,6 +475,7 @@ IOStatus ZenFS::PersistSnapshot(ZenMetaLog* meta_writer) {
   return s;
 }
 
+//将一条记录持久化到元数据日志中
 IOStatus ZenFS::PersistRecord(std::string record) {
   IOStatus s;
 
@@ -477,7 +490,7 @@ IOStatus ZenFS::PersistRecord(std::string record) {
 
   return s;
 }
-
+//就是更新 zonefile 的extent 在文件的extents发生变化时，同步文件的元数据，并更新相关的区域统计信息。
 IOStatus ZenFS::SyncFileExtents(ZoneFile* zoneFile,
                                 std::vector<ZoneExtent*> new_extents) {
   IOStatus s;
@@ -503,7 +516,7 @@ IOStatus ZenFS::SyncFileExtents(ZoneFile* zoneFile,
   return IOStatus::OK();
 }
 
-/* Must hold files_mtx_ */
+/* Must hold files_mtx_ 同步文件的元数据*/
 IOStatus ZenFS::SyncFileMetadataNoLock(ZoneFile* zoneFile, bool replace) {
   std::string fileRecord;
   std::string output;
@@ -625,11 +638,13 @@ IOStatus ZenFS::NewRandomAccessFile(const std::string& filename,
   return IOStatus::OK();
 }
 
+//检查一个字符串（value）是否以另一个字符串（ending）结束 处理文件路径 检查文件格式时候比较有用
 inline bool ends_with(std::string const& value, std::string const& ending) {
   if (ending.size() > value.size()) return false;
   return std::equal(ending.rbegin(), ending.rend(), value.rbegin());
 }
 
+//创建一个科协文件
 IOStatus ZenFS::NewWritableFile(const std::string& filename,
                                 const FileOptions& file_opts,
                                 std::unique_ptr<FSWritableFile>* result,
@@ -641,6 +656,7 @@ IOStatus ZenFS::NewWritableFile(const std::string& filename,
   return OpenWritableFile(fname, file_opts, result, nullptr, false);
 }
 
+//重用可写文件  实际就是把以前的文件删了重新创建一个
 IOStatus ZenFS::ReuseWritableFile(const std::string& filename,
                                   const std::string& old_filename,
                                   const FileOptions& file_opts,
@@ -667,7 +683,7 @@ IOStatus ZenFS::ReuseWritableFile(const std::string& filename,
 
   return OpenWritableFile(fname, file_opts, result, dbg, false);
 }
-
+//检查一个文件是否存在
 IOStatus ZenFS::FileExists(const std::string& filename,
                            const IOOptions& options, IODebugContext* dbg) {
   std::string fname = FormatPathLexically(filename);
@@ -682,6 +698,7 @@ IOStatus ZenFS::FileExists(const std::string& filename,
 
 /* If the file does not exist, create a new one,
  * else return the existing file
+
  */
 IOStatus ZenFS::ReopenWritableFile(const std::string& filename,
                                    const FileOptions& file_opts,
@@ -693,7 +710,11 @@ IOStatus ZenFS::ReopenWritableFile(const std::string& filename,
   return OpenWritableFile(fname, file_opts, result, dbg, true);
 }
 
-/* Must hold files_mtx_ */
+/**
+ *  Must hold files_mtx_ 
+ * 获取指定目录下的子文件和子目录。
+ * 它接受三个参数：dir（目录名），include_grandchildren（是否包含孙子级别的文件或目录），
+ * result（结果）*/
 void ZenFS::GetZenFSChildrenNoLock(const std::string& dir,
                                    bool include_grandchildren,
                                    std::vector<std::string>* result) {
@@ -731,7 +752,7 @@ void ZenFS::GetZenFSChildrenNoLock(const std::string& dir,
   }
 }
 
-/* Must hold files_mtx_ */
+/* Must hold files_mtx_ 获取指定目录下的所有子项*/
 IOStatus ZenFS::GetChildrenNoLock(const std::string& dir_path,
                                   const IOOptions& options,
                                   std::vector<std::string>* result,
@@ -746,7 +767,9 @@ IOStatus ZenFS::GetChildrenNoLock(const std::string& dir_path,
   if (!s.ok()) {
     /* On ZenFS empty directories cannot be created, therefore we cannot
        distinguish between "Directory not found" and "Directory is empty"
-       and always return empty lists with OK status in both cases. */
+       and always return empty lists with OK status in both cases. 
+       在ZenFS中，我们不能创建空目录。
+       因此，我们无法区分"找不到目录"和"目录为空"这两种情况。*/
     if (s.IsNotFound()) {
       return IOStatus::OK();
     }
@@ -769,7 +792,7 @@ IOStatus ZenFS::GetChildren(const std::string& dir, const IOOptions& options,
   return GetChildrenNoLock(dir, options, result, dbg);
 }
 
-/* Must hold files_mtx_ */
+/* Must hold files_mtx_ 递归删除指定目录及其所有子项*/
 IOStatus ZenFS::DeleteDirRecursiveNoLock(const std::string& dir,
                                          const IOOptions& options,
                                          IODebugContext* dbg) {
@@ -806,7 +829,7 @@ IOStatus ZenFS::DeleteDirRecursiveNoLock(const std::string& dir,
 
   return target()->DeleteDir(ToAuxPath(d), options, dbg);
 }
-
+//递归删除指定目录及其所有子项
 IOStatus ZenFS::DeleteDirRecursive(const std::string& d,
                                    const IOOptions& options,
                                    IODebugContext* dbg) {
@@ -928,7 +951,7 @@ IOStatus ZenFS::GetFileSize(const std::string& filename,
   return s;
 }
 
-/* Must hold files_mtx_ */
+/* Must hold files_mtx_ 重命名文件系统中的一个子项*/
 IOStatus ZenFS::RenameChildNoLock(std::string const& source_dir,
                                   std::string const& dest_dir,
                                   std::string const& child,
@@ -939,7 +962,7 @@ IOStatus ZenFS::RenameChildNoLock(std::string const& source_dir,
   return RenameFileNoLock(source_child, dest_child, options, dbg);
 }
 
-/* Must hold files_mtx_ */
+/* Must hold files_mtx_ 回滚对文件系统中的一个辅助目录的重命名操作*/
 IOStatus ZenFS::RollbackAuxDirRenameNoLock(
     const std::string& source_path, const std::string& dest_path,
     const std::vector<std::string>& renamed_children, const IOOptions& options,
@@ -965,7 +988,7 @@ IOStatus ZenFS::RollbackAuxDirRenameNoLock(
   return s;
 }
 
-/* Must hold files_mtx_ */
+/* Must hold files_mtx_ 重命名文件系统中的一个辅助路径*/
 IOStatus ZenFS::RenameAuxPathNoLock(const std::string& source_path,
                                     const std::string& dest_path,
                                     const IOOptions& options,
@@ -999,7 +1022,7 @@ IOStatus ZenFS::RenameAuxPathNoLock(const std::string& source_path,
   return s;
 }
 
-/* Must hold files_mtx_ */
+/* Must hold files_mtx_ 重命名文件*/
 IOStatus ZenFS::RenameFileNoLock(const std::string& src_path,
                                  const std::string& dst_path,
                                  const IOOptions& options,
@@ -1043,7 +1066,7 @@ IOStatus ZenFS::RenameFileNoLock(const std::string& src_path,
 
   return s;
 }
-
+//重命名文件
 IOStatus ZenFS::RenameFile(const std::string& source_path,
                            const std::string& dest_path,
                            const IOOptions& options, IODebugContext* dbg) {
@@ -1056,6 +1079,7 @@ IOStatus ZenFS::RenameFile(const std::string& source_path,
   return s;
 }
 
+//目的是创建一个硬链接
 IOStatus ZenFS::LinkFile(const std::string& file, const std::string& link,
                          const IOOptions& options, IODebugContext* dbg) {
   std::shared_ptr<ZoneFile> src_file(nullptr);
@@ -1087,6 +1111,7 @@ IOStatus ZenFS::LinkFile(const std::string& file, const std::string& link,
   return s;
 }
 
+//获取一个文件的硬链接数量
 IOStatus ZenFS::NumFileLinks(const std::string& file, const IOOptions& options,
                              uint64_t* nr_links, IODebugContext* dbg) {
   std::shared_ptr<ZoneFile> src_file(nullptr);
@@ -1107,6 +1132,7 @@ IOStatus ZenFS::NumFileLinks(const std::string& file, const IOOptions& options,
   return s;
 }
 
+//检查两个文件是否相同
 IOStatus ZenFS::AreFilesSame(const std::string& file, const std::string& linkf,
                              const IOOptions& options, bool* res,
                              IODebugContext* dbg) {
@@ -1134,6 +1160,7 @@ IOStatus ZenFS::AreFilesSame(const std::string& file, const std::string& linkf,
   return s;
 }
 
+//这个函数的目的是将文件系统的快照编码到一个字符串
 void ZenFS::EncodeSnapshotTo(std::string* output) {
   std::map<std::string, std::shared_ptr<ZoneFile>>::iterator it;
   std::string files_string;
@@ -1148,6 +1175,7 @@ void ZenFS::EncodeSnapshotTo(std::string* output) {
   PutLengthPrefixedSlice(output, Slice(files_string));
 }
 
+//将文件系统的状态编码为JSON格式
 void ZenFS::EncodeJson(std::ostream& json_stream) {
   bool first_element = true;
   json_stream << "[";
@@ -1162,6 +1190,7 @@ void ZenFS::EncodeJson(std::ostream& json_stream) {
   json_stream << "]";
 }
 
+//从slice对象中解码文件更新
 Status ZenFS::DecodeFileUpdateFrom(Slice* slice, bool replace) {
   std::shared_ptr<ZoneFile> update(new ZoneFile(zbd_, 0, &metadata_writer_));
   uint64_t id;
@@ -1203,6 +1232,7 @@ Status ZenFS::DecodeFileUpdateFrom(Slice* slice, bool replace) {
   return Status::OK();
 }
 
+//目的是将文件删除操作编码到一个字符串中
 Status ZenFS::DecodeSnapshotFrom(Slice* input) {
   Slice slice;
 
@@ -1224,6 +1254,7 @@ Status ZenFS::DecodeSnapshotFrom(Slice* input) {
   return Status::OK();
 }
 
+//将文件删除操作编码到一个字符串中
 void ZenFS::EncodeFileDeletionTo(std::shared_ptr<ZoneFile> zoneFile,
                                  std::string* output, std::string linkf) {
   std::string file_string;
@@ -1234,7 +1265,7 @@ void ZenFS::EncodeFileDeletionTo(std::shared_ptr<ZoneFile> zoneFile,
   PutFixed32(output, kFileDeletion);
   PutLengthPrefixedSlice(output, Slice(file_string));
 }
-
+//是从一个Slice对象中解码文件删除操作
 Status ZenFS::DecodeFileDeletionFrom(Slice* input) {
   uint64_t fileID;
   std::string fileName;
@@ -1263,6 +1294,7 @@ Status ZenFS::DecodeFileDeletionFrom(Slice* input) {
   return Status::OK();
 }
 
+//从ZenMetaLog中恢复文件系统的状态
 Status ZenFS::RecoverFrom(ZenMetaLog* log) {
   bool at_least_one_snapshot = false;
   std::string scratch;
@@ -1339,24 +1371,28 @@ Status ZenFS::RecoverFrom(ZenMetaLog* log) {
     return Status::NotFound("ZenFS", "No snapshot found");
 }
 
-/* Mount the filesystem by recovering form the latest valid metadata zone */
+/**
+ *  Mount the filesystem by recovering form the latest valid metadata zone
+ * 通过从最新有效的元数据区恢复来挂载文件系统
+*/
 Status ZenFS::Mount(bool readonly) {
-  std::vector<Zone*> metazones = zbd_->GetMetaZones();
-  std::vector<std::unique_ptr<Superblock>> valid_superblocks;
+  std::vector<Zone*> metazones = zbd_->GetMetaZones();//zdb上存放元数据的zone
+  std::vector<std::unique_ptr<Superblock>> valid_superblocks; //超级块
   std::vector<std::unique_ptr<ZenMetaLog>> valid_logs;
   std::vector<Zone*> valid_zones;
   std::vector<std::pair<uint32_t, uint32_t>> seq_map;
 
   Status s;
 
-  /* We need a minimum of two non-offline meta data zones */
+  /* We need a minimum of two non-offline meta data zones
+     检查是否有至少两个非离线的元数据区域可用 */
   if (metazones.size() < 2) {
     Error(logger_,
           "Need at least two non-offline meta zones to open for write");
     return Status::NotSupported();
   }
 
-  /* Find all valid superblocks */
+  /* Find all valid superblocks 在元数据目录中找到所有的超级块*/
   for (const auto z : metazones) {
     std::unique_ptr<ZenMetaLog> log;
     std::string scratch;
@@ -1393,7 +1429,7 @@ Status ZenFS::Mount(bool readonly) {
 
   if (!seq_map.size()) return Status::NotFound("No valid superblock found");
 
-  /* Sort superblocks by descending sequence number */
+  /* Sort superblocks by descending sequence number 把超级快按序号降序排序*/
   std::sort(seq_map.begin(), seq_map.end(),
             std::greater<std::pair<uint32_t, uint32_t>>());
 
@@ -1403,6 +1439,8 @@ Status ZenFS::Mount(bool readonly) {
   /* Recover from the zone with the highest superblock sequence number.
      If that fails go to the previous as we might have crashed when rolling
      metadata zone.
+     从具有最高超级块序列号的区域恢复。
+     如果失败，那么转到前一个区域，因为我们可能在滚动元数据区域时崩溃了
   */
   for (const auto& sm : seq_map) {
     uint32_t i = sm.second;
@@ -1431,7 +1469,7 @@ Status ZenFS::Mount(bool readonly) {
   if (!recovery_ok) {
     return Status::IOError("Failed to mount filesystem");
   }
-
+  //创建一个辅助文件系统目录
   Info(logger_, "Recovered from zone: %d", (int)valid_zones[r]->GetZoneNr());
   superblock_ = std::move(valid_superblocks[r]);
   zbd_->SetFinishTreshold(superblock_->GetFinishTreshold());
@@ -1444,7 +1482,8 @@ Status ZenFS::Mount(bool readonly) {
     return s;
   }
 
-  /* Free up old metadata zones, to get ready to roll */
+  /* Free up old metadata zones, to get ready to roll
+   遍历seq_map中的每个元素，对于不是当前元数据区域的元素，它会重置对应的valid_logs*/
   for (const auto& sm : seq_map) {
     uint32_t i = sm.second;
     /* Don't reset the current metadata zone */
@@ -1454,17 +1493,18 @@ Status ZenFS::Mount(bool readonly) {
       valid_logs[i].reset();
     }
   }
-
+  //如果文件系统不是只读的，它会尝试修复文件系统。如果修复失败，它会返回错误状态。
   if (!readonly) {
     s = Repair();
     if (!s.ok()) return s;
   }
 
+  //如果文件系统是只读的，它会输出一条信息，表示正在以只读模式挂载文件系统
   if (readonly) {
     Info(logger_, "Mounting READ ONLY");
   } else {
     std::lock_guard<std::mutex> lock(files_mtx_);
-    s = RollMetaZoneLocked();
+    s = RollMetaZoneLocked();//如果文件系统不是只读的，它会尝试滚动元数据区域。如果滚动失败，它会返回错误状态。
     if (!s.ok()) {
       Error(logger_, "Failed to roll metadata zone.");
       return s;
@@ -1475,6 +1515,11 @@ Status ZenFS::Mount(bool readonly) {
   Info(logger_, "Finish threshold %u", superblock_->GetFinishTreshold());
   Info(logger_, "Filesystem mount OK");
 
+  /**
+   * 如果文件系统不是只读的，它会尝试重置未使用的IO区域。
+   * 如果重置失败，它会返回错误状态。
+   * 然后，如果启用了垃圾收集，它会启动一个垃圾收集工作线程。
+  */
   if (!readonly) {
     Info(logger_, "Resetting unused IO Zones..");
     IOStatus status = zbd_->ResetUnusedIOZones();
@@ -1493,8 +1538,16 @@ Status ZenFS::Mount(bool readonly) {
   return Status::OK();
 }
 
+/**
+ * 目的是创建一个新的文件系统
+ * aux_fs_p：辅助文件系统路径的字符串。
+ * finish_threshold：一个32位整数，可能用于设置完成阈值。
+ * enable_gc：一个布尔值，表示是否启用垃圾收集。
+ * dz
+*/
 Status ZenFS::MkFS(std::string aux_fs_p, uint32_t finish_threshold,
                    bool enable_gc) {
+  //首先获取元数据区域，并初始化一些变量
   std::vector<Zone*> metazones = zbd_->GetMetaZones();
   std::unique_ptr<ZenMetaLog> log;
   Zone* meta_zone = nullptr;
@@ -1509,6 +1562,7 @@ Status ZenFS::MkFS(std::string aux_fs_p, uint32_t finish_threshold,
   IOStatus status = zbd_->ResetUnusedIOZones();
   if (!status.ok()) return status;
 
+  //函数遍历元数据区域，尝试获取每个区域的忙标志，并重置每个区域。如果获取或重置失败，它会返回一个错误状态
   for (const auto mz : metazones) {
     if (!mz->Acquire()) {
       assert(false);
@@ -1555,7 +1609,7 @@ Status ZenFS::MkFS(std::string aux_fs_p, uint32_t finish_threshold,
   Info(logger_, "Empty filesystem created");
   return Status::OK();
 }
-
+//获取到所有文件的写入生命周期提示
 std::map<std::string, Env::WriteLifeTimeHint> ZenFS::GetWriteLifeTimeHints() {
   std::map<std::string, Env::WriteLifeTimeHint> hint_map;
 
@@ -1567,7 +1621,7 @@ std::map<std::string, Env::WriteLifeTimeHint> ZenFS::GetWriteLifeTimeHints() {
 
   return hint_map;
 }
-
+//根据当前时间生成日志文件名
 #if !defined(NDEBUG) || defined(WITH_TERARKDB)
 static std::string GetLogFilename(std::string bdev) {
   std::ostringstream ss;
@@ -1587,6 +1641,7 @@ Status NewZenFS(FileSystem** fs, const std::string& bdevname,
   return NewZenFS(fs, ZbdBackendType::kBlockDev, bdevname, metrics);
 }
 
+//创建一个新的ZenFS文件系统实例
 Status NewZenFS(FileSystem** fs, const ZbdBackendType backend_type,
                 const std::string& backend_name,
                 std::shared_ptr<ZenFSMetrics> metrics) {
@@ -1670,6 +1725,7 @@ Status AppendZenFileSystem(
   return Status::OK();
 }
 
+//列出所有的Zen文件系统
 Status ListZenFileSystems(
     std::map<std::string, std::pair<std::string, ZbdBackendType>>& out_list) {
   std::map<std::string, std::pair<std::string, ZbdBackendType>> zenFileSystems;
@@ -1708,6 +1764,7 @@ Status ListZenFileSystems(
   return Status::OK();
 }
 
+//获取zenfs的快照
 void ZenFS::GetZenFSSnapshot(ZenFSSnapshot& snapshot,
                              const ZenFSSnapshotOptions& options) {
   if (options.zbd_) {
@@ -1744,9 +1801,11 @@ void ZenFS::GetZenFSSnapshot(ZenFSSnapshot& snapshot,
   }
 }
 
+//迁移文件的extent
 IOStatus ZenFS::MigrateExtents(
     const std::vector<ZoneExtentSnapshot*>& extents) {
   IOStatus s;
+  //它通过文件名将扩展分组到一个映射中，只迁移以".sst"结尾的文件扩展
   // Group extents by their filename
   std::map<std::string, std::vector<ZoneExtentSnapshot*>> file_extents;
   for (auto* ext : extents) {
@@ -1766,6 +1825,7 @@ IOStatus ZenFS::MigrateExtents(
   return s;
 }
 
+//迁移file extent
 IOStatus ZenFS::MigrateFileExtents(
     const std::string& fname,
     const std::vector<ZoneExtentSnapshot*>& migrate_exts) {
@@ -1773,7 +1833,7 @@ IOStatus ZenFS::MigrateFileExtents(
   Info(logger_, "MigrateFileExtents, fname: %s, extent count: %lu",
        fname.data(), migrate_exts.size());
 
-  // The file may be deleted by other threads, better double check.
+  // The file may be deleted by other threads, better double check. 首先获取文件
   auto zfile = GetFile(fname);
   if (zfile == nullptr) {
     return IOStatus::OK();

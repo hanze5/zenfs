@@ -14,24 +14,24 @@
 
 namespace ROCKSDB_NAMESPACE {
 
-// Indicate what stats info we want.
+// Indicate what stats info we want. 显示了我们需要的信息
 struct ZenFSSnapshotOptions {
-  // Global zoned device stats info
-  bool zbd_ = 0;
-  // Per zone stats info
+  // Global zoned device stats info zone设备信息
+  bool zbd_ = 0;                     
+  // Per zone stats info   每个zone的信息
   bool zone_ = 0;
-  // Get all file->extents & extent->file mappings
+  // Get all file->extents & extent->file mappings  获取文件与extent的双向映射关系
   bool zone_file_ = 0;
-  bool trigger_report_ = 0;
-  bool log_garbage_ = 0;
-  bool as_lock_free_as_possible_ = 1;
+  bool trigger_report_ = 0;//触发器报告？
+  bool log_garbage_ = 0;   //记录垃圾？
+  bool as_lock_free_as_possible_ = 1; //尽可能地无锁。
 };
 
 class ZBDSnapshot {
  public:
-  uint64_t free_space;
-  uint64_t used_space;
-  uint64_t reclaimable_space;
+  uint64_t free_space;          //空闲空间
+  uint64_t used_space;          //使用的空间
+  uint64_t reclaimable_space;   //可回收的空间
 
  public:
   ZBDSnapshot() = default;
@@ -44,12 +44,12 @@ class ZBDSnapshot {
 
 class ZoneSnapshot {
  public:
-  uint64_t start;
-  uint64_t wp;
+  uint64_t start;          //快照zone 起始地址
+  uint64_t wp;             //快照zone 写指针位置
 
-  uint64_t capacity;
-  uint64_t used_capacity;
-  uint64_t max_capacity;
+  uint64_t capacity;       //快照zone 容量
+  uint64_t used_capacity;  //已经使用的容量
+  uint64_t max_capacity;   //最大容量
 
  public:
   ZoneSnapshot(const Zone& zone)
@@ -62,10 +62,10 @@ class ZoneSnapshot {
 
 class ZoneExtentSnapshot {
  public:
-  uint64_t start;
-  uint64_t length;
-  uint64_t zone_start;
-  std::string filename;
+  uint64_t start;          //zone extent的快照 起始地址
+  uint64_t length;         //zone extent的快照 长度
+  uint64_t zone_start;     //zone extent的快照 所属zone 的起始地址？
+  std::string filename;    //zone extent的快照 所属file 的name
 
  public:
   ZoneExtentSnapshot(const ZoneExtent& extent, const std::string fname)
@@ -77,9 +77,9 @@ class ZoneExtentSnapshot {
 
 class ZoneFileSnapshot {
  public:
-  uint64_t file_id;
-  std::string filename;
-  std::vector<ZoneExtentSnapshot> extents;
+  uint64_t file_id;                       //zone file快照 fileid
+  std::string filename;                   //zone file快照 filename
+  std::vector<ZoneExtentSnapshot> extents;//zone file快照
 
  public:
   ZoneFileSnapshot(ZoneFile& file)
@@ -90,6 +90,7 @@ class ZoneFileSnapshot {
   }
 };
 
+//zenfs的快照就包含了上面所有的快照  zdb快照  zone快照  zonefile快照 zonefileextent快照
 class ZenFSSnapshot {
  public:
   ZenFSSnapshot() {}

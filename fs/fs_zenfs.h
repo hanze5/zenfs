@@ -36,25 +36,25 @@ class ZenFSSnapshot;
 class ZenFSSnapshotOptions;
 
 class Superblock {
-  uint32_t magic_ = 0;
-  char uuid_[37] = {0};
-  uint32_t sequence_ = 0;
-  uint32_t superblock_version_ = 0;
-  uint32_t flags_ = 0;
+  uint32_t magic_ = 0;               //用于验证超级快完整性或者识别文件系统类型
+  char uuid_[37] = {0};              //文件系统唯一标识
+  uint32_t sequence_ = 0;            //
+  uint32_t superblock_version_ = 0;  //超级快版本
+  uint32_t flags_ = 0;               
   uint32_t block_size_ = 0; /* in bytes */
   uint32_t zone_size_ = 0;  /* in blocks */
   uint32_t nr_zones_ = 0;
-  char aux_fs_path_[256] = {0};
-  uint32_t finish_treshold_ = 0;
-  char zenfs_version_[64]{0};
-  char reserved_[123] = {0};
+  char aux_fs_path_[256] = {0};      //辅助文件系统的路径？  反正当时用于存放日志
+  uint32_t finish_treshold_ = 0;     
+  char zenfs_version_[64]{0};        //zenfs版本
+  char reserved_[123] = {0};         //保留位
 
  public:
-  const uint32_t MAGIC = 0x5a454e46; /* ZENF */
-  const uint32_t ENCODED_SIZE = 512;
-  const uint32_t CURRENT_SUPERBLOCK_VERSION = 2;
-  const uint32_t DEFAULT_FLAGS = 0;
-  const uint32_t FLAGS_ENABLE_GC = 1 << 0;
+  const uint32_t MAGIC = 0x5a454e46; /* ZENF 标识和验证文件系统*/
+  const uint32_t ENCODED_SIZE = 512; ///超级快编码大小 512B
+  const uint32_t CURRENT_SUPERBLOCK_VERSION = 2;//当前超级快版本是2
+  const uint32_t DEFAULT_FLAGS = 0;            
+  const uint32_t FLAGS_ENABLE_GC = 1 << 0;      //启用或禁用垃圾收集
 
   Superblock() {}
 
@@ -84,11 +84,11 @@ class Superblock {
     strncpy(zenfs_version_, zenfs_version.c_str(), sizeof(zenfs_version_) - 1);
   }
 
-  Status DecodeFrom(Slice* input);
-  void EncodeTo(std::string* output);
-  Status CompatibleWith(ZonedBlockDevice* zbd);
+  Status DecodeFrom(Slice* input);//主要功能是从输入的 Slice 对象中解码超级块的信息
+  void EncodeTo(std::string* output);//将超级块的信息编码到输出的 std::string 对象中
+  Status CompatibleWith(ZonedBlockDevice* zbd);//检查 ZenFS 超级块的一些属性是否与 zbd 兼容
 
-  void GetReport(std::string* reportString);
+  void GetReport(std::string* reportString);//报告超级快信息
 
   uint32_t GetSeq() { return sequence_; }
   std::string GetAuxFsPath() { return std::string(aux_fs_path_); }
@@ -123,33 +123,34 @@ class ZenMetaLog {
     (void)ok;
   }
 
-  IOStatus AddRecord(const Slice& slice);
-  IOStatus ReadRecord(Slice* record, std::string* scratch);
+  IOStatus AddRecord(const Slice& slice);////将 slice 中的数据添加到元数据日志中
+  IOStatus ReadRecord(Slice* record, std::string* scratch);//
 
   Zone* GetZone() { return zone_; };
 
  private:
-  IOStatus Read(Slice* slice);
+  IOStatus Read(Slice* slice);  //从元数据日志中读取数据
 };
 
+//最为重要的组件集成者    zenfs！！
 class ZenFS : public FileSystemWrapper {
-  ZonedBlockDevice* zbd_;
-  std::map<std::string, std::shared_ptr<ZoneFile>> files_;
-  std::mutex files_mtx_;
-  std::shared_ptr<Logger> logger_;
-  std::atomic<uint64_t> next_file_id_;
+  ZonedBlockDevice* zbd_;                                 //zenfs所属zbd
+  std::map<std::string, std::shared_ptr<ZoneFile>> files_;//文件名到Zonefile的映射合集
+  std::mutex files_mtx_;                                  //访问file的锁
+  std::shared_ptr<Logger> logger_;                        //记录日志
+  std::atomic<uint64_t> next_file_id_;                    //原子变量 用于生成下一个文件的id？
 
-  Zone* cur_meta_zone_ = nullptr;
-  std::unique_ptr<ZenMetaLog> meta_log_;
-  std::mutex metadata_sync_mtx_;
-  std::unique_ptr<Superblock> superblock_;
+  Zone* cur_meta_zone_ = nullptr;                         //Zone类型的指针 可能用于访问或操作当前元区域
+  std::unique_ptr<ZenMetaLog> meta_log_;                  //ZenMetaLog类型的独特指针，可能用于访问或操作元日志。
+  std::mutex metadata_sync_mtx_;                          //互斥锁，可能用于同步元数据的访问
+  std::unique_ptr<Superblock> superblock_;                //指向Superblock类型的独特指针，可能用于访问或操作超级块
 
-  std::shared_ptr<Logger> GetLogger() { return logger_; }
+  std::shared_ptr<Logger> GetLogger() { return logger_; } //返回logger_的共享指针
 
-  std::unique_ptr<std::thread> gc_worker_ = nullptr;
-  bool run_gc_worker_ = false;
+  std::unique_ptr<std::thread> gc_worker_ = nullptr;      //这是一个指向std::thread类型的独特指针，用于执行垃圾收集工作
+  bool run_gc_worker_ = false;                            //布尔值，用于控制是否运行垃圾收集工作
 
-  struct ZenFSMetadataWriter : public MetadataWriter {
+  struct ZenFSMetadataWriter : public MetadataWriter {   
     ZenFS* zenFS;
     IOStatus Persist(ZoneFile* zoneFile) {
       Debug(zenFS->GetLogger(), "Syncing metadata for: %s",
@@ -158,14 +159,15 @@ class ZenFS : public FileSystemWrapper {
     }
   };
 
-  ZenFSMetadataWriter metadata_writer_;
+  ZenFSMetadataWriter metadata_writer_;                   // //zenfs用于写元数据的结构体
 
+  //表示ZenFS文件系统中的不同标签。每个标签都对应一个uint32_t类型的值
   enum ZenFSTag : uint32_t {
-    kCompleteFilesSnapshot = 1,
-    kFileUpdate = 2,
-    kFileDeletion = 3,
-    kEndRecord = 4,
-    kFileReplace = 5,
+    kCompleteFilesSnapshot = 1,  //完整文件快照
+    kFileUpdate = 2,             //文件更新
+    kFileDeletion = 3,           //文件删除
+    kEndRecord = 4,              //记录结束
+    kFileReplace = 5,            //文件替换
   };
 
   void LogFiles();

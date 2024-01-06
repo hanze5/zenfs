@@ -35,6 +35,7 @@ std::string ZbdlibBackend::ErrorToString(int err) {
   return "";
 }
 
+//检查调度器  必须是mq-deadline
 IOStatus ZbdlibBackend::CheckScheduler() {
   std::ostringstream path;
   std::string s = filename_;
@@ -62,9 +63,10 @@ IOStatus ZbdlibBackend::CheckScheduler() {
 IOStatus ZbdlibBackend::Open(bool readonly, bool exclusive,
                              unsigned int *max_active_zones,
                              unsigned int *max_open_zones) {
-  zbd_info info;
+  zbd_info info; //这些信息都是通过libzbd拿到的
 
   /* The non-direct file descriptor acts as an exclusive-use semaphore */
+  //它根据exclusive参数的值，以独占模式或非独占模式打开设备进行读取
   if (exclusive) {
     read_f_ = zbd_open(filename_.c_str(), O_RDONLY | O_EXCL, &info);
   } else {
@@ -82,7 +84,7 @@ IOStatus ZbdlibBackend::Open(bool readonly, bool exclusive,
         "Failed to open zoned block device for direct read: " +
         ErrorToString(errno));
   }
-
+  //如果不是读 那就是写
   if (readonly) {
     write_f_ = -1;
   } else {
@@ -93,11 +95,11 @@ IOStatus ZbdlibBackend::Open(bool readonly, bool exclusive,
           ErrorToString(errno));
     }
   }
-
+  //还必须是host-managed设备呢 
   if (info.model != ZBD_DM_HOST_MANAGED) {
     return IOStatus::NotSupported("Not a host managed block device");
   }
-
+  //调度器ok
   IOStatus ios = CheckScheduler();
   if (ios != IOStatus::OK()) return ios;
 
@@ -168,6 +170,10 @@ IOStatus ZbdlibBackend::Close(uint64_t start) {
 }
 
 int ZbdlibBackend::InvalidateCache(uint64_t pos, uint64_t size) {
+  /**
+   * 该函数用于控制文件系统的缓存行为。read_f_是一个文件描述符，
+   * pos和size分别表示数据的起始位置和大小，POSIX_FADV_DONTNEED是一个建议，告诉操作系统这部分数据将来可能不再需要。
+  */
   return posix_fadvise(read_f_, pos, size, POSIX_FADV_DONTNEED);
 }
 

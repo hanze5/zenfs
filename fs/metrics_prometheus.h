@@ -17,6 +17,7 @@ namespace ROCKSDB_NAMESPACE {
 
 using namespace prometheus;
 
+//指标测量？
 class GaugeMetric {
  public:
   Family<Gauge> *family;
@@ -36,9 +37,11 @@ class ZenFSPrometheusMetrics : public rocksdb::ZenFSMetrics {
   std::unordered_map<ZenFSMetricsHistograms, std::shared_ptr<GaugeMetric>>
       metric_map_;
   uint64_t report_interval_ms_ = 5000;
+  //一组线程 应该是进行信息收集的线程
   std::thread *collect_thread_;
   std::atomic_bool stop_collect_thread_;
 
+  //这里同样是把label和type对应起来
   const std::unordered_map<uint32_t, std::pair<std::string, uint32_t>>
       info_map_ = {
           {ZENFS_NON_WAL_WRITE_LATENCY,

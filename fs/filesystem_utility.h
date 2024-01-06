@@ -28,24 +28,26 @@ class path {
   // `a/b/../c/  ->   a/c/`
   // `a/b/../c   ->   a/c`
   path lexically_normal() {
+    //如果已经规范化那么就直接返回
     if (!normalized_path_.empty()) {
       return *this;
     }
 
+    //如果源路径为空，那么规范化的路径也设置为空
     if (src_path_.empty()) {
       normalized_path_ = "";
       return *this;
     }
-
+    //如果源路径只有一个根目录(/)，那么规范化的路径就是源路径
     if (src_path_.compare("/") == 0) {
       normalized_path_ = src_path_;
       has_terminator_ = true;
       return *this;
     }
-
+    //函数会将源路径分割成多个段，并存储在一个向量中。在这个过程中，如果遇到..，则删除上一个段；如果遇到.，则忽略；如果遇到空字符串，也忽略
     std::stringstream rst;
     std::vector<std::string> segs;
-
+    //函数会检查路径是否以/结尾，以确定是否有终结符。如果没有终结符，那么最后一个段就是文件名
     std::istringstream iss(src_path_);
     std::string item;
     while (std::getline(iss, item, '/')) {
@@ -71,6 +73,7 @@ class path {
       filename_ = *(--segs.end());
     }
 
+    //函数会将所有的段重新组合成一个字符串，作为规范化的路径。在这个过程中，如果源路径是一个目录，那么父路径就是规范化的路径
     // Keep the root slash
     if (src_path_[0] == '/') {
       rst << "/";
@@ -117,11 +120,11 @@ class path {
   }
 
  private:
-  std::string src_path_;
-  std::string normalized_path_;
-  std::string parent_path_;
+  std::string src_path_;       //源文件路径
+  std::string normalized_path_;//标准化路径
+  std::string parent_path_;    //父目录路径
   // @see std::filesystem::path::filename()
-  std::string filename_;
-  bool has_terminator_ = false;
+  std::string filename_;       //文件名
+  bool has_terminator_ = false;//是否以路径分隔符结束
 };
 }  // namespace filesystem_utility

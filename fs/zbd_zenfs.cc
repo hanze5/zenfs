@@ -48,6 +48,7 @@
 
 namespace ROCKSDB_NAMESPACE {
 
+//zone的构造函数 需传入设备  设备后端   以及 
 Zone::Zone(ZonedBlockDevice *zbd, ZonedBlockDeviceBackend *zbd_be,
            std::unique_ptr<ZoneList> &zones, unsigned int idx)
     : zbd_(zbd),
@@ -69,6 +70,7 @@ bool Zone::IsFull() { return (capacity_ == 0); }
 bool Zone::IsEmpty() { return (wp_ == start_); }
 uint64_t Zone::GetZoneNr() { return start_ / zbd_->GetZoneSize(); }
 
+//zone信息json格式
 void Zone::EncodeJson(std::ostream &json_stream) {
   json_stream << "{";
   json_stream << "\"start\":" << start_ << ",";
@@ -162,7 +164,7 @@ inline IOStatus Zone::CheckRelease() {
 
   return IOStatus::OK();
 }
-
+//根据 offset返回Class Zone的指针
 Zone *ZonedBlockDevice::GetIOZone(uint64_t offset) {
   for (const auto z : io_zones)
     if (z->start_ <= offset && offset < (z->start_ + zbd_be_->GetZoneSize()))
@@ -170,6 +172,7 @@ Zone *ZonedBlockDevice::GetIOZone(uint64_t offset) {
   return nullptr;
 }
 
+//ZonedBlockDevice的构造函数  最主要的就是根据ZbdBackendType类型 初始化ZbdlibBackend(path) 
 ZonedBlockDevice::ZonedBlockDevice(std::string path, ZbdBackendType backend,
                                    std::shared_ptr<Logger> logger,
                                    std::shared_ptr<ZenFSMetrics> metrics)
@@ -184,28 +187,37 @@ ZonedBlockDevice::ZonedBlockDevice(std::string path, ZbdBackendType backend,
 }
 
 IOStatus ZonedBlockDevice::Open(bool readonly, bool exclusive) {
-  std::unique_ptr<ZoneList> zone_rep;
-  unsigned int max_nr_active_zones;
-  unsigned int max_nr_open_zones;
-  Status s;
-  uint64_t i = 0;
+  std::unique_ptr<ZoneList> zone_rep; //说明同时只能有一个ZoneList指针zone_rep
+  unsigned int max_nr_active_zones;   //最大 active zone数
+  unsigned int max_nr_open_zones;     //最大 open zone数
+  Status s;                           //rocksdb里面表示状态的类
+  uint64_t i = 0;                     
   uint64_t m = 0;
   // Reserve one zone for metadata and another one for extent migration
+  /**
+   * 它提到了为元数据和迁移扩展分别保留一个区域。
+   * 元数据是描述其他数据的数据，它提供了有关数据的详细信息，如其格式或者创建日期等。
+   * 迁移扩展则可能是指在数据迁移过程中需要的额外存储空间。
+   * 这两个区域的保留可以确保在处理文件系统数据时，元数据和迁移扩展的处理不会受到影响，从而提高文件系统的稳定性和效率。
+  */
   int reserved_zones = 2;
 
+  //写操作打开zone必须是独占
   if (!readonly && !exclusive)
     return IOStatus::InvalidArgument("Write opens must be exclusive");
 
   IOStatus ios = zbd_be_->Open(readonly, exclusive, &max_nr_active_zones,
                                &max_nr_open_zones);
-  if (ios != IOStatus::OK()) return ios;
 
+  if (ios != IOStatus::OK()) return ios;
+  //确定zbd设备zone数不小于32个 这个是zenfs定的
   if (zbd_be_->GetNrZones() < ZENFS_MIN_ZONES) {
     return IOStatus::NotSupported("To few zones on zoned backend (" +
                                   std::to_string(ZENFS_MIN_ZONES) +
                                   " required)");
   }
 
+  //获取max_nr_active_zones max_nr_open_zones
   if (max_nr_active_zones == 0)
     max_nr_active_io_zones_ = zbd_be_->GetNrZones();
   else
@@ -225,10 +237,12 @@ IOStatus ZonedBlockDevice::Open(bool readonly, bool exclusive) {
     return IOStatus::IOError("Failed to list zones");
   }
 
+  //就前三个zone当元数据zone
   while (m < ZENFS_META_ZONES && i < zone_rep->ZoneCount()) {
     /* Only use sequential write required zones */
     if (zbd_be_->ZoneIsSwr(zone_rep, i)) {
       if (!zbd_be_->ZoneIsOffline(zone_rep, i)) {
+        //
         meta_zones.push_back(new Zone(this, zbd_be_.get(), zone_rep, i));
       }
       m++;
@@ -249,6 +263,7 @@ IOStatus ZonedBlockDevice::Open(bool readonly, bool exclusive) {
           return IOStatus::Corruption("Failed to set busy flag of zone " +
                                       std::to_string(newZone->GetZoneNr()));
         }
+        //
         io_zones.push_back(newZone);
         if (zbd_be_->ZoneIsActive(zone_rep, i)) {
           active_io_zones_++;
@@ -323,6 +338,7 @@ void ZonedBlockDevice::LogZoneStats() {
        active_io_zones_.load(), open_io_zones_.load());
 }
 
+//
 void ZonedBlockDevice::LogZoneUsage() {
   for (const auto z : io_zones) {
     int64_t used = z->used_capacity_;
@@ -344,6 +360,7 @@ void ZonedBlockDevice::LogGarbageInfo() {
   //
   // We don't need to lock io_zones since we only read data and we don't need
   // the result to be precise.
+  //这行代码初始化了一个名为zone_gc_stat的数组，用于存储各个垃圾百分比对应的区域数量
   int zone_gc_stat[12] = {0};
   for (auto z : io_zones) {
     if (!z->Acquire()) {
@@ -380,6 +397,7 @@ void ZonedBlockDevice::LogGarbageInfo() {
   Info(logger_, "%s", ss.str().data());
 }
 
+
 ZonedBlockDevice::~ZonedBlockDevice() {
   for (const auto z : meta_zones) {
     delete z;
@@ -392,7 +410,7 @@ ZonedBlockDevice::~ZonedBlockDevice() {
 
 #define LIFETIME_DIFF_NOT_GOOD (100)
 #define LIFETIME_DIFF_COULD_BE_WORSE (50)
-
+//计算区域的生命周期和文件的生命周期之间的差异，以便于进行生命周期管理。
 unsigned int GetLifeTimeDiff(Env::WriteLifeTimeHint zone_lifetime,
                              Env::WriteLifeTimeHint file_lifetime) {
   assert(file_lifetime <= Env::WLTH_EXTREME);
@@ -471,7 +489,12 @@ void ZonedBlockDevice::WaitForOpenIOZoneToken(bool prioritized) {
   /* Wait for an open IO Zone token - after this function returns
    * the caller is allowed to write to a closed zone. The callee
    * is responsible for calling a PutOpenIOZoneToken to return the resource
+   * 这段代码是为了防止非优先级的分配器饿死优先级的分配器。
+   * 如果prioritized为真，那么分配器的打开限制就是max_nr_open_io_zones_；
+   * 否则，分配器的打开限制就是max_nr_open_io_zones_ - 1。
+   * 这样做的目的是确保优先级的分配器总是能够获得足够的资源，避免因为资源不足而无法进行操作
    */
+  
   std::unique_lock<std::mutex> lk(zone_resources_mtx_);
   zone_resources_.wait(lk, [this, allocator_open_limit] {
     if (open_io_zones_.load() < allocator_open_limit) {
@@ -495,7 +518,7 @@ bool ZonedBlockDevice::GetActiveIOZoneTokenIfAvailable() {
   }
   return false;
 }
-
+//释放iozone 打开令牌
 void ZonedBlockDevice::PutOpenIOZoneToken() {
   {
     std::unique_lock<std::mutex> lk(zone_resources_mtx_);
@@ -503,7 +526,7 @@ void ZonedBlockDevice::PutOpenIOZoneToken() {
   }
   zone_resources_.notify_one();
 }
-
+//释放iozone 活动令牌
 void ZonedBlockDevice::PutActiveIOZoneToken() {
   {
     std::unique_lock<std::mutex> lk(zone_resources_mtx_);
@@ -511,7 +534,11 @@ void ZonedBlockDevice::PutActiveIOZoneToken() {
   }
   zone_resources_.notify_one();
 }
-
+/**
+ * 检查设备中的每个 IOZone，看它们的剩余容量是否低于设定的阈值（finish_threshold_）。
+ * 如果一个区域的剩余容量低于这个阈值，并且该区域既不为空也不满，
+ * 则会调用 Finish 方法来完成该区域
+*/
 IOStatus ZonedBlockDevice::ApplyFinishThreshold() {
   IOStatus s;
 
@@ -519,8 +546,11 @@ IOStatus ZonedBlockDevice::ApplyFinishThreshold() {
 
   for (const auto z : io_zones) {
     if (z->Acquire()) {
+      //检查容量是否小于总容量一定的百分比阈值
       bool within_finish_threshold =
           z->capacity_ < (z->max_capacity_ * finish_threshold_ / 100);
+
+      //如果区域既不为空也不满，并且满足上述条件
       if (!(z->IsEmpty() || z->IsFull()) && within_finish_threshold) {
         /* If there is less than finish_threshold_% remaining capacity in a
          * non-open-zone, finish the zone */
@@ -532,6 +562,7 @@ IOStatus ZonedBlockDevice::ApplyFinishThreshold() {
         }
         s = z->CheckRelease();
         if (!s.ok()) return s;
+        //finish了就是不活动了 释放iozone活动令牌
         PutActiveIOZoneToken();
       } else {
         s = z->CheckRelease();
@@ -647,6 +678,7 @@ IOStatus ZonedBlockDevice::AllocateEmptyZone(Zone **zone_out) {
   return IOStatus::OK();
 }
 
+//使某一部分区域的缓存失效
 IOStatus ZonedBlockDevice::InvalidateCache(uint64_t pos, uint64_t size) {
   int ret = zbd_be_->InvalidateCache(pos, size);
 
@@ -679,6 +711,7 @@ int ZonedBlockDevice::Read(char *buf, uint64_t offset, int n, bool direct) {
   return ret;
 }
 
+//释放迁移zone？？
 IOStatus ZonedBlockDevice::ReleaseMigrateZone(Zone *zone) {
   IOStatus s = IOStatus::OK();
   {
@@ -715,12 +748,14 @@ IOStatus ZonedBlockDevice::TakeMigrateZone(Zone **out_zone,
 
 IOStatus ZonedBlockDevice::AllocateIOZone(Env::WriteLifeTimeHint file_lifetime,
                                           IOType io_type, Zone **out_zone) {
+  //指针将用于存储被分配的IO区域
   Zone *allocated_zone = nullptr;
-  unsigned int best_diff = LIFETIME_DIFF_NOT_GOOD;
+  unsigned int best_diff = LIFETIME_DIFF_NOT_GOOD;//将用于存储最佳生命周期差值
   int new_zone = 0;
   IOStatus s;
 
-  auto tag = ZENFS_WAL_IO_ALLOC_LATENCY;
+  auto tag = ZENFS_WAL_IO_ALLOC_LATENCY;    //用于标记io分配的延迟类型
+  //检查IO类型是否不等于IOType::kWAL。如果不等于，那么根据文件的生命周期，将tag设置为ZENFS_L0_IO_ALLOC_LATENCY或ZENFS_NON_WAL_IO_ALLOC_LATENCY
   if (io_type != IOType::kWAL) {
     // L0 flushes have lifetime MEDIUM
     if (file_lifetime == Env::WLTH_MEDIUM) {
@@ -729,11 +764,17 @@ IOStatus ZonedBlockDevice::AllocateIOZone(Env::WriteLifeTimeHint file_lifetime,
       tag = ZENFS_NON_WAL_IO_ALLOC_LATENCY;
     }
   }
-
+  //用于监控IO分配的延迟
   ZenFSMetricsLatencyGuard guard(metrics_, tag, Env::Default());
+  /**
+   * 调用metrics_的ReportQPS方法，报告每秒查询数（QPS）
+  */
   metrics_->ReportQPS(ZENFS_IO_ALLOC_QPS, 1);
 
   // Check if a deferred IO error was set
+  /**
+   * 
+  */
   s = GetZoneDeferredStatus();
   if (!s.ok()) {
     return s;
@@ -746,9 +787,11 @@ IOStatus ZonedBlockDevice::AllocateIOZone(Env::WriteLifeTimeHint file_lifetime,
     }
   }
 
+  //待一个开放的IO区域令牌。如果io_type等于IOType::kWAL，则优先等待
   WaitForOpenIOZoneToken(io_type == IOType::kWAL);
 
   /* Try to fill an already open zone(with the best life time diff) */
+  /* 尝试找到一个已经打开的区域（具有最佳生命周期差异）*/
   s = GetBestOpenZoneMatch(file_lifetime, &best_diff, &allocated_zone);
   if (!s.ok()) {
     PutOpenIOZoneToken();
@@ -756,13 +799,18 @@ IOStatus ZonedBlockDevice::AllocateIOZone(Env::WriteLifeTimeHint file_lifetime,
   }
 
   // Holding allocated_zone if != nullptr
-
+  //判断当前的生命周期差异是否超过了一个可接受的范围。如果超过了这个范围，那么可能需要进行一些额外的操作，比如选择一个新的IO区域进行写入。
   if (best_diff >= LIFETIME_DIFF_COULD_BE_WORSE) {
+    //尝试获取一个可用的活动IO区域令牌，如果获取成功，got_token为真
     bool got_token = GetActiveIOZoneTokenIfAvailable();
 
     /* If we did not get a token, try to use the best match, even if the life
      * time diff not good but a better choice than to finish an existing zone
      * and open a new one
+     * 如果我们没有获取到令牌，我们会尝试使用最佳匹配的区域，即使这个区域的生命周期差异不理想。
+     * 这样做比结束一个已经存在的区域并开启一个新的区域要好。
+     * 这是因为结束一个已经存在的区域并开启一个新的区域会消耗更多的资源和时间。
+     * 因此，即使生命周期差异不理想，使用最佳匹配的区域仍然是一个更好的选择
      */
     if (allocated_zone != nullptr) {
       if (!got_token && best_diff == LIFETIME_DIFF_COULD_BE_WORSE) {
@@ -770,6 +818,7 @@ IOStatus ZonedBlockDevice::AllocateIOZone(Env::WriteLifeTimeHint file_lifetime,
               "Allocator: avoided a finish by relaxing lifetime diff "
               "requirement\n");
       } else {
+        //查分配的IO区域是否可以被释放，并将结果存储在变量s中。
         s = allocated_zone->CheckRelease();
         if (!s.ok()) {
           PutOpenIOZoneToken();
@@ -783,6 +832,10 @@ IOStatus ZonedBlockDevice::AllocateIOZone(Env::WriteLifeTimeHint file_lifetime,
     /* If we haven't found an open zone to fill, open a new zone */
     if (allocated_zone == nullptr) {
       /* We have to make sure we can open an empty zone */
+      /**
+       * 只要没有获取到令牌并且没有可用的活动IO区域令牌，就会执行循环体中的代码。
+       * 循环体中的代码主要是尝试结束最便宜的IO区域，并在结束失败时返回错误状态
+      */
       while (!got_token && !GetActiveIOZoneTokenIfAvailable()) {
         s = FinishCheapestIOZone();
         if (!s.ok()) {
@@ -790,7 +843,7 @@ IOStatus ZonedBlockDevice::AllocateIOZone(Env::WriteLifeTimeHint file_lifetime,
           return s;
         }
       }
-
+      //找一个空的
       s = AllocateEmptyZone(&allocated_zone);
       if (!s.ok()) {
         PutActiveIOZoneToken();
@@ -800,6 +853,7 @@ IOStatus ZonedBlockDevice::AllocateIOZone(Env::WriteLifeTimeHint file_lifetime,
 
       if (allocated_zone != nullptr) {
         assert(allocated_zone->IsBusy());
+        //将分配的IO区域的生命周期设置为文件的生命周期
         allocated_zone->lifetime_ = file_lifetime;
         new_zone = true;
       } else {
@@ -824,6 +878,7 @@ IOStatus ZonedBlockDevice::AllocateIOZone(Env::WriteLifeTimeHint file_lifetime,
 
   *out_zone = allocated_zone;
 
+  //报告当前开放的IO区域数量和活动的IO区域数量
   metrics_->ReportGeneral(ZENFS_OPEN_ZONES_COUNT, open_io_zones_);
   metrics_->ReportGeneral(ZENFS_ACTIVE_ZONES_COUNT, active_io_zones_);
 

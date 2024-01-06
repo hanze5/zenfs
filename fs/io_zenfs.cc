@@ -54,15 +54,15 @@ void ZoneExtent::EncodeJson(std::ostream& json_stream) {
 }
 
 enum ZoneFileTag : uint32_t {
-  kFileID = 1,
-  kFileNameDeprecated = 2,
-  kFileSize = 3,
-  kWriteLifeTimeHint = 4,
-  kExtent = 5,
-  kModificationTime = 6,
-  kActiveExtentStart = 7,
-  kIsSparse = 8,
-  kLinkedFilename = 9,
+  kFileID = 1,                   //文件id
+  kFileNameDeprecated = 2,       //已弃用的文件名
+  kFileSize = 3,                 //文件大小
+  kWriteLifeTimeHint = 4,        //生命周期
+  kExtent = 5,                   //范围或区域
+  kModificationTime = 6,         //修改时间
+  kActiveExtentStart = 7,        //活动范围开始
+  kIsSparse = 8,                 //是否是稀疏文件
+  kLinkedFilename = 9,           //链接文件名
 };
 
 void ZoneFile::EncodeTo(std::string* output, uint32_t extent_start) {
@@ -272,6 +272,7 @@ void ZoneFile::ClearExtents() {
   extents_.clear();
 }
 
+//zonefile只对应一个active zone
 IOStatus ZoneFile::CloseActiveZone() {
   IOStatus s = IOStatus::OK();
   if (active_zone_) {
@@ -390,15 +391,17 @@ IOStatus ZoneFile::PositionedRead(uint64_t offset, size_t n, Slice* result,
   }
 
   r_off = 0;
+  //首先获取到第一个extent
   extent = GetExtent(offset, &r_off);
   if (!extent) {
     /* read start beyond end of (synced) file data*/
     *result = Slice(scratch, 0);
     return s;
   }
+  //计算得到这个extent的末尾是哪里
   extent_end = extent->start_ + extent->length_;
 
-  /* Limit read size to end of file */
+  /* Limit read size to end of file 如果给定的偏移量超过了文件大小*/
   if ((offset + n) > file_size_)
     r_sz = file_size_ - offset;
   else
@@ -406,6 +409,7 @@ IOStatus ZoneFile::PositionedRead(uint64_t offset, size_t n, Slice* result,
 
   ptr = scratch;
 
+  //只要还没读完
   while (read != r_sz) {
     size_t pread_sz = r_sz - read;
 
@@ -422,7 +426,7 @@ IOStatus ZoneFile::PositionedRead(uint64_t offset, size_t n, Slice* result,
       pread_sz += bytes_to_align;
       aligned = true;
     }
-
+    //调用这个去读zdb设备上的
     r = zbd_->Read(ptr, r_off, pread_sz, direct && aligned);
     if (r <= 0) break;
 
@@ -489,17 +493,21 @@ IOStatus ZoneFile::AllocateNewZone() {
   extent_filepos_ = file_size_;
 
   /* Persist metadata so we can recover the active extent using
-     the zone write pointer in case there is a crash before syncing */
+     the zone write pointer in case there is a crash before syncing 
+     通过持久化元数据和使用区域写指针，我们可以在系统崩溃后恢复活动区域的数据*/
   return PersistMetadata();
 }
 
 /* Byte-aligned writes without a sparse header */
+/**
+ * 将数据（存储在buffer中）以字节对齐的方式写入
+*/
 IOStatus ZoneFile::BufferedAppend(char* buffer, uint32_t data_size) {
   uint32_t left = data_size;
   uint32_t wr_size;
   uint32_t block_sz = GetBlockSize();
   IOStatus s;
-
+  //如果没有活动区域那么将尝试分配一个
   if (active_zone_ == NULL) {
     s = AllocateNewZone();
     if (!s.ok()) return s;
@@ -548,7 +556,8 @@ IOStatus ZoneFile::BufferedAppend(char* buffer, uint32_t data_size) {
 }
 
 /* Byte-aligned, sparse writes with inline metadata
-   the caller reserves 8 bytes of data for a size header */
+   the caller reserves 8 bytes of data for a size header 
+   以字节对齐的方式进行稀疏写入，同时在内联元数据中预留8字节的空间用于大小头部*/
 IOStatus ZoneFile::SparseAppend(char* sparse_buffer, uint32_t data_size) {
   uint32_t left = data_size;
   uint32_t wr_size;
@@ -612,11 +621,12 @@ IOStatus ZoneFile::Append(void* data, int data_size) {
   uint32_t wr_size, offset = 0;
   IOStatus s = IOStatus::OK();
 
+  //检查是否有一个活动的zone 如果没有就要分配一个
   if (!active_zone_) {
     s = AllocateNewZone();
     if (!s.ok()) return s;
   }
-
+  //
   while (left) {
     if (active_zone_->capacity_ == 0) {
       PushExtent();
@@ -644,21 +654,24 @@ IOStatus ZoneFile::Append(void* data, int data_size) {
   return IOStatus::OK();
 }
 
+//恢复稀疏写入的每个extent
 IOStatus ZoneFile::RecoverSparseExtents(uint64_t start, uint64_t end,
                                         Zone* zone) {
   /* Sparse writes, we need to recover each individual segment */
   IOStatus s;
-  uint32_t block_sz = GetBlockSize();
+  uint32_t block_sz = GetBlockSize();//获取块大小
   uint64_t next_extent_start = start;
   char* buffer;
   int recovered_segments = 0;
   int ret;
 
+  //尝试以sysconf(_SC_PAGESIZE)指定的对齐方式分配block_sz大小的内存，并将内存的地址赋值给buffer。如果posix_memalign函数返回非零值，表示内存分配失败，那么就会返回一个错误信息"Out of memory while recovering"。这通常发生在系统内存不足的情况下。
   ret = posix_memalign((void**)&buffer, sysconf(_SC_PAGESIZE), block_sz);
   if (ret) {
     return IOStatus::IOError("Out of memory while recovering");
   }
 
+  //在每次循环中，它从next_extent_start开始读取一个块大小(block_sz)的数据到buffer
   while (next_extent_start < end) {
     uint64_t extent_length;
 
@@ -667,14 +680,14 @@ IOStatus ZoneFile::RecoverSparseExtents(uint64_t start, uint64_t end,
       s = IOStatus::IOError("Unexpected read error while recovering");
       break;
     }
-
+    //如果读取成功，它会从buffer解码出扩展的长度(extent_length)
     extent_length = DecodeFixed64(buffer);
     if (extent_length == 0) {
       s = IOStatus::IOError("Unexpected extent length while recovering");
       break;
     }
     recovered_segments++;
-
+    //如果扩展长度正常，它会增加恢复段的数量(recovered_segments)，并将扩展长度加到区域的已用容量(zone->used_capacity_)上
     zone->used_capacity_ += extent_length;
     extents_.push_back(new ZoneExtent(next_extent_start + SPARSE_HEADER_SIZE,
                                       extent_length, zone));
@@ -692,7 +705,8 @@ IOStatus ZoneFile::RecoverSparseExtents(uint64_t start, uint64_t end,
 
 IOStatus ZoneFile::Recover() {
   /* If there is no active extent, the file was either closed gracefully
-     or there were no writes prior to a crash. All good.*/
+     or there were no writes prior to a crash. All good.
+     如果没有，那么文件要么是正常关闭的，要么在崩溃之前没有写入操作，所以它直接返回IOStatus::OK()*/
   if (!HasActiveExtent()) return IOStatus::OK();
 
   /* Figure out which zone we were writing to */
@@ -707,7 +721,7 @@ IOStatus ZoneFile::Recover() {
     return IOStatus::IOError("Zone wp is smaller than active extent start");
   }
 
-  /* How much data do we need to recover? */
+  /* How much data do we need to recover? 计算需要恢复的数据量*/
   uint64_t to_recover = zone->wp_ - extent_start_;
 
   /* Do we actually have any data to recover? */
@@ -717,13 +731,13 @@ IOStatus ZoneFile::Recover() {
     return IOStatus::OK();
   }
 
-  /* Is the data sparse or was it writted direct? */
+  /* Is the data sparse or was it writted direct? 稀疏文件需要额外操作*/
   if (is_sparse_) {
     IOStatus s = RecoverSparseExtents(extent_start_, zone->wp_, zone);
     if (!s.ok()) return s;
   } else {
     /* For non-sparse files, the data is contigous and we can recover directly
-       any missing data using the WP */
+       any missing data using the WP 那么它会直接使用写指针(zone->wp_)来恢复任何缺失的数据，并将恢复的数据量加到区域的已用容量(zone->used_capacity_)上，然后创建一个新的ZoneExtent对象，表示恢复的数据范围，并将其添加到extents_列表中*/
     zone->used_capacity_ += to_recover;
     extents_.push_back(new ZoneExtent(extent_start_, to_recover, zone));
   }
@@ -731,7 +745,7 @@ IOStatus ZoneFile::Recover() {
   /* Mark up the file as having no missing extents */
   extent_start_ = NO_EXTENT;
 
-  /* Recalculate file size */
+  /* Recalculate file size 重新计算file的大小*/
   file_size_ = 0;
   for (uint32_t i = 0; i < extents_.size(); i++) {
     file_size_ += extents_[i]->length_;
@@ -739,7 +753,7 @@ IOStatus ZoneFile::Recover() {
 
   return IOStatus::OK();
 }
-
+//接受一个ZoneExtent对象的向量new_list作为参数。这个函数的主要功能是替换ZoneFile对象的extents_成员变量
 void ZoneFile::ReplaceExtentList(std::vector<ZoneExtent*> new_list) {
   assert(IsOpenForWR() && new_list.size() > 0);
   assert(new_list.size() == extents_.size());
@@ -748,10 +762,12 @@ void ZoneFile::ReplaceExtentList(std::vector<ZoneExtent*> new_list) {
   extents_ = new_list;
 }
 
+//加入一个新的LinkName
 void ZoneFile::AddLinkName(const std::string& linkf) {
   linkfiles_.push_back(linkf);
 }
 
+//把名为src的linkfile重命名为dest
 IOStatus ZoneFile::RenameLink(const std::string& src, const std::string& dest) {
   auto itr = std::find(linkfiles_.begin(), linkfiles_.end(), src);
   if (itr != linkfiles_.end()) {
@@ -762,7 +778,7 @@ IOStatus ZoneFile::RenameLink(const std::string& src, const std::string& dest) {
   }
   return IOStatus::OK();
 }
-
+//删除名为 <参数> 的linkfile
 IOStatus ZoneFile::RemoveLinkName(const std::string& linkf) {
   assert(GetNrLinks());
   auto itr = std::find(linkfiles_.begin(), linkfiles_.end(), linkf);
@@ -773,12 +789,12 @@ IOStatus ZoneFile::RemoveLinkName(const std::string& linkf) {
   }
   return IOStatus::OK();
 }
-
+//设置zonefile的生命周期
 IOStatus ZoneFile::SetWriteLifeTimeHint(Env::WriteLifeTimeHint lifetime) {
   lifetime_ = lifetime;
   return IOStatus::OK();
 }
-
+//调用zone->Release() 将zone file的active_zone_成员释放
 void ZoneFile::ReleaseActiveZone() {
   assert(active_zone_ != nullptr);
   bool ok = active_zone_->Release();
@@ -787,12 +803,14 @@ void ZoneFile::ReleaseActiveZone() {
   active_zone_ = nullptr;
 }
 
+//zonefile将某一个zone设为自己的活动zone
 void ZoneFile::SetActiveZone(Zone* zone) {
   assert(active_zone_ == nullptr);
   assert(zone->IsBusy());
   active_zone_ = zone;
 }
 
+//ZonedWritableFile是FSWritableFile的子类  基类是rocksdb的抽象类
 ZonedWritableFile::ZonedWritableFile(ZonedBlockDevice* zbd, bool _buffered,
                                      std::shared_ptr<ZoneFile> zoneFile) {
   assert(zoneFile->IsOpenForWR());
@@ -806,6 +824,16 @@ ZonedWritableFile::ZonedWritableFile(ZonedBlockDevice* zbd, bool _buffered,
   buffer = nullptr;
 
   if (buffered) {
+    /**
+     * 下面这段代码的主要目的是为稀疏文件的写操作准备缓冲
+     * 首先检查zonefile是否是稀疏文件
+     * 如果是，它会创建一个名为sparse_buffer的缓冲区，大小为1MB加上一个块的大小（额外的块大小用于填充）。
+     * 然后，它会使用posix_memalign函数来分配内存，以便sparse_buffer的地址是系统页面大小的倍数。
+     * 如果内存分配失败，sparse_buffer将被设置为nullptr，并且会有一个断言来确保sparse_buffer不为nullptr。
+     * 最后，它会设置buffer_sz和buffer的值，buffer_sz是sparse_buffer_sz减去ZoneFile::SPARSE_HEADER_SIZE和一个块的大小，buffer是sparse_buffer加上ZoneFile::SPARSE_HEADER_SIZE。
+     * 这样，buffer就指向了sparse_buffer中的一个位置，该位置之前的ZoneFile::SPARSE_HEADER_SIZE字节可以用于存储稀疏文件的头信息。
+     * 区
+    */
     if (zoneFile->IsSparse()) {
       size_t sparse_buffer_sz;
 
@@ -858,9 +886,10 @@ IOStatus ZonedWritableFile::Truncate(uint64_t size,
 }
 
 IOStatus ZonedWritableFile::DataSync() {
+  //检查是否开启了缓冲区
   if (buffered) {
     IOStatus s;
-    buffer_mtx_.lock();
+    buffer_mtx_.lock();//获取锁
     /* Flushing the buffer will result in a new extent added to the list*/
     s = FlushBuffer();
     buffer_mtx_.unlock();

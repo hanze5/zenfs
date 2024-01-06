@@ -10,6 +10,7 @@
 
 namespace ROCKSDB_NAMESPACE {
 
+//ZenFSHistogramsNameMap ，它将一些 uint32_t 类型的键映射到一对 std::string 和 uint32_t 类型的值
 const std::unordered_map<uint32_t, std::pair<std::string, uint32_t>>
     ZenFSHistogramsNameMap = {
         {ZENFS_WRITE_LATENCY,
@@ -25,12 +26,12 @@ struct ReporterSample {
   typedef std::pair<TypeTime, TypeValue> TypeRecord;
 
  private:
-  port::Mutex mu_;
-  ZenFSMetricsReporterType type_;
-  std::vector<TypeRecord> hist_;
-
-  static const TypeTime MinReportInterval =
-      30 * 1000000;  // 30 seconds for all reporters by default.
+  port::Mutex mu_;                //这是一个互斥锁，用于保护 hist_ 的访问。
+  ZenFSMetricsReporterType type_; //这是一个 ZenFSMetricsReporterType 类型的变量，表示报告器的类型
+  std::vector<TypeRecord> hist_;  //这是一个 TypeRecord 类型的向量，用于存储历史记录
+  // 30 seconds for all reporters by default. 这是一个静态常量，表示所有报告器的默认最小报告间隔，单位是微秒
+  static const TypeTime MinReportInterval = 30 * 1000000;  
+  //这是一个私有成员函数，用于判断是否准备好报告  也就是上次报告之后是不是过了最小时间间隔
   bool ReadyToReport(uint64_t time) const {
     // AssertHeld(&mu);
     if (hist_.size() == 0) return 1;
@@ -40,11 +41,15 @@ struct ReporterSample {
 
  public:
   ReporterSample(ZenFSMetricsReporterType type) : mu_(), type_(type), hist_() {}
+
   void Record(const TypeTime& time, TypeValue value) {
     MutexLock guard(&mu_);
     if (ReadyToReport(time)) hist_.push_back(TypeRecord(time, value));
   }
+
   ZenFSMetricsReporterType Type() const { return type_; }
+
+  //返回一个当前报告历史记录的快照
   void GetHistSnapshot(std::vector<TypeRecord>& hist) {
     MutexLock guard(&mu_);
     hist = hist_;
@@ -62,6 +67,7 @@ struct ZenFSMetricsSample : public ZenFSMetrics {
 
  public:
   ZenFSMetricsSample(Env* env) : env_(env), reporter_map_() {
+    //为每一个label都配备一个ReporterSample
     for (auto& label_with_type : ZenFSHistogramsNameMap)
       AddReporter(static_cast<uint32_t>(label_with_type.first),
                   static_cast<uint32_t>(label_with_type.second.second));
@@ -70,18 +76,22 @@ struct ZenFSMetricsSample : public ZenFSMetrics {
 
   virtual void AddReporter(uint32_t label_uint,
                            uint32_t type_uint = 0) override {
+    //将 label_uint 强制转换为 ZenFSMetricsHistograms 类型，得到 label
     auto label = static_cast<ZenFSMetricsHistograms>(label_uint);
     assert(ZenFSHistogramsNameMap.find(label) != ZenFSHistogramsNameMap.end());
 
     auto pair = ZenFSHistogramsNameMap.find(label)->second;
+    //根据label与type的映射可以找到对应的
     auto type = pair.second;
 
+    //检查type和传入的type_uint能不能对的上
     if (type_uint != 0) {
       auto type_check = static_cast<ZenFSMetricsReporterType>(type_uint);
       assert(type_check == type);
       (void)type_check;
     }
 
+    
     switch (type) {
       case ZENFS_REPORTER_TYPE_GENERAL:
       case ZENFS_REPORTER_TYPE_LATENCY:
@@ -92,6 +102,7 @@ struct ZenFSMetricsSample : public ZenFSMetrics {
       } break;
     }
   }
+  //它用于报告一个值  把value传入到有一个label或者type的历史记录里面去
   virtual void Report(uint32_t label_uint, size_t value,
                       uint32_t type_uint = 0) override {
     auto label = static_cast<ZenFSMetricsHistograms>(label_uint);
