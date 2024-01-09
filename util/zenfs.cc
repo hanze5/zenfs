@@ -30,37 +30,43 @@ using GFLAGS_NAMESPACE::ParseCommandLineFlags;
 using GFLAGS_NAMESPACE::RegisterFlagValidator;
 using GFLAGS_NAMESPACE::SetUsageMessage;
 
-DEFINE_string(zbd, "", "Path to a zoned block device.");
-DEFINE_string(zonefs, "", "Path to a zonefs mountpoint.");
+//定义了一些参数，它们可以在运行程序时进行设置  
+DEFINE_string(zbd, "", "Path to a zoned block device.");   //zdb设备的路径
+DEFINE_string(zonefs, "", "Path to a zonefs mountpoint."); //zonefs的挂载点路径
 DEFINE_string(aux_path, "",
-              "Path for auxiliary file storage (log and lock files).");
+              "Path for auxiliary file storage (log and lock files).");//用于存储辅助文件（如日志文件和锁文件）
 DEFINE_bool(
     force, false,
     "Force the action. May result in data loss.\n"
     "If used with mkfs or rmdir commands, data will be lost on an existing "
     "file system. If used with backup, data copied from "
     "the drive will likely be incomplete and/or corrupt "
-    "- only use this for testing purposes.");
-DEFINE_string(path, "", "File path");
-DEFINE_int32(finish_threshold, 0, "Finish used zones if less than x% left");
-DEFINE_string(restore_path, "", "Path to restore files");
-DEFINE_string(backup_path, "", "Path to backup files");
-DEFINE_string(src_file, "", "Source file path");
-DEFINE_string(dest_file, "", "Destination file path");
-DEFINE_bool(enable_gc, false, "Enable garbage collection");
+    "- only use this for testing purposes.");                           //强制执行操作。如果与mkfs或rmdir命令一起使用，可能会导致现有文件系统上的数据丢失。如果与备份一起使用，从驱动器复制的数据可能会不完整或损坏，只应用于测试目的。
+DEFINE_string(path, "", "File path");                                   //文件路径
+DEFINE_int32(finish_threshold, 0, "Finish used zones if less than x% left");//zone 的完成阈值
+DEFINE_string(restore_path, "", "Path to restore files");                //restore文件的路径
+DEFINE_string(backup_path, "", "Path to backup files");                  //备份文件的路径
+DEFINE_string(src_file, "", "Source file path");                         //源文件路径
+DEFINE_string(dest_file, "", "Destination file path");                   //目的文件路径
+DEFINE_bool(enable_gc, false, "Enable garbage collection");              //是否启动垃圾回收
 
 namespace ROCKSDB_NAMESPACE {
 
+/**
+ * 目的是确保路径字符串path以目录分隔符（在这种情况下是/）结束。
+ * 如果path是空的，或者path的最后一个字符不是/，那么函数会在path的末尾添加一个*/
 void AddDirSeparatorAtEnd(std::string &path) {
   if (path.empty() || path.back() != '/') path = path + "/";
 }
 
+//以特定模式打开一个区域块设备 将返回一个指向ZonedBlockDevice的智能指针
 std::unique_ptr<ZonedBlockDevice> zbd_open(bool readonly, bool exclusive) {
   std::unique_ptr<ZonedBlockDevice> zbd{new ZonedBlockDevice(
       FLAGS_zbd.empty() ? FLAGS_zonefs : FLAGS_zbd,
       FLAGS_zbd.empty() ? ZbdBackendType::kZoneFS : ZbdBackendType::kBlockDev,
-      nullptr)};
+      nullptr)};//实例化一个新的ZonedBlockDevice 确定zbdbackend
 
+  //调用zbd->Open
   IOStatus open_status = zbd->Open(readonly, exclusive);
 
   if (!open_status.ok()) {
@@ -73,7 +79,7 @@ std::unique_ptr<ZonedBlockDevice> zbd_open(bool readonly, bool exclusive) {
 }
 
 // Here we pass 'zbd' by non-const reference to be able to pass its ownership
-// to 'zenFS'
+// to 'zenFS' 挂载一个文件系统并且 参数zenFS独占其所有权
 Status zenfs_mount(std::unique_ptr<ZonedBlockDevice> &zbd,
                    std::unique_ptr<ZenFS> *zenFS, bool readonly) {
   Status s;
@@ -89,6 +95,7 @@ Status zenfs_mount(std::unique_ptr<ZonedBlockDevice> &zbd,
   return s;
 }
 
+//检查路径是否是一个目录
 int is_dir(const char *path) {
   struct stat st;
   if (stat(path, &st) != 0) {
@@ -100,11 +107,15 @@ int is_dir(const char *path) {
 
 // Create or check pre-existing aux directory and fail if it is
 // inaccessible by current user and if it has previous data
+/**
+ * 创建或检查一个辅助目录，确保它是可访问的、为空的，并且当前用户有足够的权限
+*/
 int create_aux_dir(const char *path) {
   struct dirent *dent;
   size_t nfiles = 0;
   int ret = 0;
 
+  //尝试创建一个目录
   errno = 0;
   ret = mkdir(path, 0750);
   if (ret < 0 && EEXIST != errno) {
@@ -121,7 +132,7 @@ int create_aux_dir(const char *path) {
   }
 
   errno = 0;
-
+  //打开path目录，并将其封装在一个智能指针aux_dir中。
   auto closedirDeleter = [](DIR *d) {
     if (d != nullptr) closedir(d);
   };
@@ -135,6 +146,7 @@ int create_aux_dir(const char *path) {
 
   // Consider the directory as non-empty if any files/dir other
   // than . and .. are found.
+  //读取aux_dir目录中的文件和目录，直到读取到的文件和目录数量超过2
   while ((dent = readdir(aux_dir.get())) != NULL && nfiles <= 2) ++nfiles;
   if (nfiles > 2) {
     fprintf(stderr, "Aux directory %s is not empty.\n", path);
@@ -152,20 +164,24 @@ int create_aux_dir(const char *path) {
   return 0;
 }
 
+//创建一个新的ZenFS文件系统  
 int zenfs_tool_mkfs() {
   Status s;
 
+  //检查FLAGS_aux_path参数是否为空 必须指定辅助文件目录
   if (FLAGS_aux_path.empty()) {
     fprintf(stderr, "You need to specify --aux_path\n");
     return 1;
   }
-
+  //根据参数 调用create_aux_dir函数创建一个辅助目录。
   if (create_aux_dir(FLAGS_aux_path.c_str())) return 1;
 
+  //获取zbd指针并打开
   std::unique_ptr<ZonedBlockDevice> zbd = zbd_open(false, true);
   if (!zbd) return 1;
 
   std::unique_ptr<ZenFS> zenFS;
+  //挂载文件系统
   s = zenfs_mount(zbd, &zenFS, false);
   if ((s.ok() || !s.IsNotFound()) && !FLAGS_force) {
     fprintf(
@@ -174,6 +190,7 @@ int zenfs_tool_mkfs() {
     return 1;
   }
 
+  //open两次是为了确保在创建新的文件系统之前，设备没有被其他进程使用，并且没有现有的文件系统，除非使用了--force选项
   zenFS.reset();
 
   zbd = zbd_open(false, true);
@@ -182,6 +199,7 @@ int zenfs_tool_mkfs() {
 
   AddDirSeparatorAtEnd(FLAGS_aux_path);
 
+  //调用zenFS->MkFS方法创建一个新的文件系统。
   s = zenFS->MkFS(FLAGS_aux_path, FLAGS_finish_threshold, FLAGS_enable_gc);
   if (!s.ok()) {
     fprintf(stderr, "Failed to create file system, error: %s\n",
@@ -195,12 +213,14 @@ int zenfs_tool_mkfs() {
   return 0;
 }
 
+//列出ZenFS文件系统中指定路径下的所有文件和目录
 void list_children(const std::unique_ptr<ZenFS> &zenFS,
                    const std::string &path) {
   IOOptions opts;
   IODebugContext dbg;
   std::vector<std::string> result;
   uint64_t size;
+  //调用zenFS->GetChildren方法获取指定路径下的所有文件和目录，并将结果存储在result向量中
   IOStatus io_status = zenFS->GetChildren(path, opts, &result, &dbg);
 
   if (!io_status.ok()) {
@@ -208,7 +228,7 @@ void list_children(const std::unique_ptr<ZenFS> &zenFS,
             path.c_str());
     return;
   }
-
+  //它遍历result向量中的每一个文件或目录：
   for (const auto &f : result) {
     io_status = zenFS->GetFileSize(path + f, opts, &size, &dbg);
     if (!io_status.ok()) {
@@ -234,6 +254,7 @@ void list_children(const std::unique_ptr<ZenFS> &zenFS,
   }
 }
 
+//用于列出ZenFS文件系统中的所有文件和目录
 int zenfs_tool_list() {
   Status s;
   std::unique_ptr<ZonedBlockDevice> zbd = zbd_open(true, false);
@@ -252,6 +273,7 @@ int zenfs_tool_list() {
   return 0;
 }
 
+//用于显示ZenFS文件系统的磁盘空间使用情况
 int zenfs_tool_df() {
   Status s;
   std::unique_ptr<ZonedBlockDevice> zbd = zbd_open(true, false);
@@ -281,6 +303,7 @@ int zenfs_tool_df() {
   return 0;
 }
 
+//调用ListZenFileSystems函数来获取所有ZenFS文件系统的列表，并将结果存储在zenFileSystems中
 int zenfs_tool_lsuuid() {
   std::map<std::string, std::pair<std::string, ZbdBackendType>> zenFileSystems;
   Status s = ListZenFileSystems(zenFileSystems);
@@ -296,6 +319,7 @@ int zenfs_tool_lsuuid() {
   return 0;
 }
 
+//它用于获取文件的写入生命周期提示（Write Life Time Hint）
 static std::map<std::string, Env::WriteLifeTimeHint> wlth_map;
 
 Env::WriteLifeTimeHint GetWriteLifeTimeHint(const std::string &filename) {
@@ -304,7 +328,7 @@ Env::WriteLifeTimeHint GetWriteLifeTimeHint(const std::string &filename) {
   }
   return Env::WriteLifeTimeHint::WLTH_NOT_SET;
 }
-
+//将写入生命周期提示保存到文件中，以便在需要时进行恢复
 int SaveWriteLifeTimeHints() {
   std::ofstream wlth_file(FLAGS_path + "/write_lifetime_hints.dat");
 
@@ -321,6 +345,7 @@ int SaveWriteLifeTimeHints() {
   return 0;
 }
 
+//从文件中读取写入生命周期提示，并将它们保存到wlth_map中，以便在需要时进行使用
 void ReadWriteLifeTimeHints() {
   std::ifstream wlth_file(FLAGS_path + "/write_lifetime_hints.dat");
 
@@ -339,6 +364,7 @@ void ReadWriteLifeTimeHints() {
   wlth_file.close();
 }
 
+//复制文件内容，它可以在不同的文件系统之间复制文件，或者在同一个文件系统内复制文件
 IOStatus zenfs_tool_copy_file(FileSystem *f_fs, const std::string &f,
                               FileSystem *t_fs, const std::string &t) {
   FileOptions fopts;
@@ -396,6 +422,7 @@ IOStatus zenfs_tool_copy_file(FileSystem *f_fs, const std::string &f,
   return t_file->Fsync(iopts, &dbg);
 }
 
+//是复制目录内容  如果子项也是目录就继续调用自身  如果是文件就调用 zenfs_tool_copy_file
 IOStatus zenfs_tool_copy_dir(FileSystem *f_fs, const std::string &f_dir,
                              FileSystem *t_fs, const std::string &t_dir) {
   IOOptions opts;
@@ -450,6 +477,7 @@ IOStatus zenfs_tool_copy_dir(FileSystem *f_fs, const std::string &f_dir,
 
   return s;
 }
+//主要作用是创建目录，它可以在任何实现了RocksDB文件系统接口的文件系统中创建目录。
 IOStatus zenfs_create_directories(FileSystem *fs, std::string path) {
   std::string dir_name;
   IODebugContext dbg;
@@ -468,12 +496,14 @@ IOStatus zenfs_create_directories(FileSystem *fs, std::string path) {
 
   return s;
 }
-
+//用于备份ZenFS文件系统
 int zenfs_tool_backup() {
   Status status;
   IOStatus io_status;
   IOOptions opts;
   IODebugContext dbg;
+  //尝试以只读模式打开一个独占的区域块设备。如果设备已经被其他进程使用，那么它会检查是否使用了--force选项。
+  //如果使用了--force选项，那么它会尝试以只读模式打开一个非独占的区域块设备
   std::unique_ptr<ZonedBlockDevice> zbd = zbd_open(true, true);
 
   if (!zbd) {
@@ -486,7 +516,7 @@ int zenfs_tool_backup() {
   }
 
   if (!zbd) return 1;
-
+  //试挂载ZenFS文件系统
   std::unique_ptr<ZenFS> zenFS;
   status = zenfs_mount(zbd, &zenFS, true);
   if (!status.ok()) {
@@ -495,6 +525,12 @@ int zenfs_tool_backup() {
     return 1;
   }
 
+  /**
+   * 检查备份路径（FLAGS_backup_path）是否是一个目录。
+   * 如果不是目录，那么它会调用zenfs_tool_copy_file函数将源文件的内容复制到目标文件中。
+   * 如果是目录，那么它会调用zenfs_create_directories函数在目标文件系统中创建目录，
+   * 然后调用zenfs_tool_copy_dir函数将源目录的内容复制到目标目录中。
+  */
   bool is_dir;
   io_status = zenFS->IsDirectory(FLAGS_backup_path, opts, &is_dir, &dbg);
   if (!io_status.ok()) {
@@ -528,24 +564,28 @@ int zenfs_tool_backup() {
     fprintf(stderr, "Copy failed, error: %s\n", io_status.ToString().c_str());
     return 1;
   }
-
+  //最后，它获取ZenFS文件系统的写入生命周期提示，并调用SaveWriteLifeTimeHints函数将它们保存到文件中
   wlth_map = zenFS->GetWriteLifeTimeHints();
   return SaveWriteLifeTimeHints();
 }
 
+//用于在ZenFS文件系统中创建硬链接
 int zenfs_tool_link() {
   Status s;
   IOStatus io_s;
   IOOptions iopts;
   IODebugContext dbg;
 
+  //检查是否已经指定了源文件（FLAGS_src_file）和目标文件（FLAGS_dest_file）
   if (FLAGS_src_file.empty() || FLAGS_dest_file.empty()) {
     fprintf(stderr, "Error: Specify --src_file and --dest_file to be linked\n");
     return 1;
   }
+  //尝试以非只读模式打开一个独占的区域块设备
   std::unique_ptr<ZonedBlockDevice> zbd = zbd_open(false, true);
   if (!zbd) return 1;
 
+  //尝试挂载ZenFS文件系统。如果挂载失败
   std::unique_ptr<ZenFS> zenFS;
   s = zenfs_mount(zbd, &zenFS, false);
   if (!s.ok()) {
@@ -554,6 +594,7 @@ int zenfs_tool_link() {
     return 1;
   }
 
+  //调用zenFS->LinkFile方法尝试在源文件和目标文件之间创建硬链接
   io_s = zenFS->LinkFile(FLAGS_src_file, FLAGS_dest_file, iopts, &dbg);
   if (!io_s.ok()) {
     fprintf(stderr, "Link failed, error: %s\n", io_s.ToString().c_str());
@@ -565,19 +606,23 @@ int zenfs_tool_link() {
   return 0;
 }
 
+//用于删除ZenFS文件系统中的文件
 int zenfs_tool_delete_file() {
   Status s;
   IOStatus io_s;
   IOOptions iopts;
   IODebugContext dbg;
 
+  //检查是否已经指定了要删除的文件的路径（FLAGS_path）
   if (FLAGS_path.empty()) {
     fprintf(stderr, "Error: Specify --path of the file to be deleted.\n");
     return 1;
   }
+  //试以非只读模式打开一个独占的区域块设备
   std::unique_ptr<ZonedBlockDevice> zbd = zbd_open(false, true);
   if (!zbd) return 1;
 
+  //尝试挂载ZenFS文件系统
   std::unique_ptr<ZenFS> zenFS;
   s = zenfs_mount(zbd, &zenFS, false);
   if (!s.ok()) {
@@ -585,7 +630,7 @@ int zenfs_tool_delete_file() {
             s.ToString().c_str());
     return 1;
   }
-
+  //调用zenFS->DeleteFile方法尝试删除指定的文件
   io_s = zenFS->DeleteFile(FLAGS_path, iopts, &dbg);
   if (!io_s.ok()) {
     fprintf(stderr, "Delete failed with error: %s\n", io_s.ToString().c_str());
@@ -596,6 +641,7 @@ int zenfs_tool_delete_file() {
   return 0;
 }
 
+//重命名文件 调用zenfs方法
 int zenfs_tool_rename_file() {
   Status s;
   IOStatus io_s;
@@ -629,6 +675,7 @@ int zenfs_tool_rename_file() {
   return 0;
 }
 
+//删除一个目录
 int zenfs_tool_remove_directory() {
   Status s;
   IOStatus io_s;
@@ -639,9 +686,11 @@ int zenfs_tool_remove_directory() {
     fprintf(stderr, "Error: Specify --path of the directory to be deleted.\n");
     return 1;
   }
+  //以非只读、独占模式打开一个ZonedBlockDevice
   std::unique_ptr<ZonedBlockDevice> zbd = zbd_open(false, true);
   if (!zbd) return 1;
 
+  //挂载文件系统
   std::unique_ptr<ZenFS> zenFS;
   s = zenfs_mount(zbd, &zenFS, false);
   if (!s.ok()) {
@@ -651,6 +700,7 @@ int zenfs_tool_remove_directory() {
   }
 
   if (FLAGS_force) {
+    //
     io_s = zenFS->DeleteDirRecursive(FLAGS_path, iopts, &dbg);
     if (!io_s.ok()) {
       fprintf(stderr,
@@ -672,6 +722,7 @@ int zenfs_tool_remove_directory() {
   return 0;
 }
 
+//恢复文件或目录
 int zenfs_tool_restore() {
   Status status;
   IOStatus io_status;
@@ -694,10 +745,10 @@ int zenfs_tool_restore() {
             status.ToString().c_str());
     return 1;
   }
-
+  //以非只读、独占模式打开一个ZonedBlockDevice
   std::unique_ptr<ZonedBlockDevice> zbd = zbd_open(false, true);
   if (!zbd) return 1;
-
+  //挂载文件系统
   std::unique_ptr<ZenFS> zenFS;
   status = zenfs_mount(zbd, &zenFS, false);
   if (!status.ok()) {
@@ -705,14 +756,15 @@ int zenfs_tool_restore() {
             status.ToString().c_str());
     return 1;
   }
-
+  //在挂载的文件系统中创建恢复路径
   io_status = zenfs_create_directories(zenFS.get(), FLAGS_restore_path);
   if (!io_status.ok()) {
     fprintf(stderr, "Create directory failed, error: %s\n",
             io_status.ToString().c_str());
     return 1;
   }
-
+  //如果FLAGS_path是一个文件，函数将尝试复制文件到恢复路径。
+  //如果FLAGS_path是一个目录，函数将尝试复制整个目录到恢复路径。
   if (!is_dir) {
     std::string dest_file =
         FLAGS_restore_path + fpath.lexically_normal().filename().string();
@@ -731,7 +783,7 @@ int zenfs_tool_restore() {
 
   return 0;
 }
-
+//将文件系统的信息以JSON格式输出
 int zenfs_tool_dump() {
   Status s;
   std::unique_ptr<ZonedBlockDevice> zbd = zbd_open(true, false);
