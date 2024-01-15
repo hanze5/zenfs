@@ -237,7 +237,7 @@ Status ZoneFile::MergeUpdate(std::shared_ptr<ZoneFile> update, bool replace) {
   return Status::OK();
 }
 
-ZoneFile::ZoneFile(ZonedBlockDevice* zbd, uint64_t file_id,
+ZoneFile::ZoneFile(ZonedBlockDevice* zbd, uint64_t file_id, 
                    MetadataWriter* metadata_writer)
     : zbd_(zbd),
       active_zone_(NULL),
@@ -250,8 +250,10 @@ ZoneFile::ZoneFile(ZonedBlockDevice* zbd, uint64_t file_id,
       nr_synced_extents_(0),
       m_time_(0),
       metadata_writer_(metadata_writer) {}
-
-std::string ZoneFile::GetFilename() { return linkfiles_[0]; }
+//dz modified
+std::string ZoneFile::GetFilename() {
+  return linkfiles_[0]; 
+}
 time_t ZoneFile::GetFileModificationTime() { return m_time_; }
 
 uint64_t ZoneFile::GetFileSize() { return file_size_; }
@@ -482,7 +484,31 @@ void ZoneFile::PushExtent() {
 
 IOStatus ZoneFile::AllocateNewZone() {
   Zone* zone;
+  
   IOStatus s = zbd_->AllocateIOZone(lifetime_, io_type_, &zone);
+
+  if (!s.ok()) return s;
+  if (!zone) {
+    return IOStatus::NoSpace("Zone allocation failure\n");
+  }
+  SetActiveZone(zone);
+  extent_start_ = active_zone_->wp_;
+  extent_filepos_ = file_size_;
+
+  /* Persist metadata so we can recover the active extent using
+     the zone write pointer in case there is a crash before syncing 
+     通过持久化元数据和使用区域写指针，我们可以在系统崩溃后恢复活动区域的数据*/
+  return PersistMetadata();
+}
+/**
+ * dz added:
+ * ZoneFile::AllocateNewZone重载
+*/
+IOStatus ZoneFile::AllocateNewZone(std::string filename) {
+  Zone* zone;
+  std::cout<<"dz ZoneFile::AllocateNewZone:需要分配zone的文件是"<<filename<<std::endl;
+  //dz modified
+  IOStatus s = zbd_->AllocateIOZone(lifetime_, io_type_, &zone,filename);
 
   if (!s.ok()) return s;
   if (!zone) {
@@ -509,7 +535,8 @@ IOStatus ZoneFile::BufferedAppend(char* buffer, uint32_t data_size) {
   IOStatus s;
   //如果没有活动区域那么将尝试分配一个
   if (active_zone_ == NULL) {
-    s = AllocateNewZone();
+    std::cout<<"dz ZoneFile::BufferedAppend : "<<GetFilename()<<std::endl;
+    s = AllocateNewZone(GetFilename());
     if (!s.ok()) return s;
   }
 
@@ -547,7 +574,8 @@ IOStatus ZoneFile::BufferedAppend(char* buffer, uint32_t data_size) {
       if (left) {
         memmove((void*)(buffer), (void*)(buffer + wr_size), left);
       }
-      s = AllocateNewZone();
+      std::cout<<"dz ZoneFile::BufferedAppend : "<<GetFilename()<<std::endl;
+      s = AllocateNewZone(GetFilename());
       if (!s.ok()) return s;
     }
   }
@@ -565,7 +593,8 @@ IOStatus ZoneFile::SparseAppend(char* sparse_buffer, uint32_t data_size) {
   IOStatus s;
 
   if (active_zone_ == NULL) {
-    s = AllocateNewZone();
+    std::cout<<"dz ZoneFile::SparseAppend : "<<GetFilename()<<std::endl;
+    s = AllocateNewZone(GetFilename());
     if (!s.ok()) return s;
   }
 
@@ -607,7 +636,8 @@ IOStatus ZoneFile::SparseAppend(char* sparse_buffer, uint32_t data_size) {
         memmove((void*)(sparse_buffer + ZoneFile::SPARSE_HEADER_SIZE),
                 (void*)(sparse_buffer + wr_size), left);
       }
-      s = AllocateNewZone();
+      std::cout<<"dz ZoneFile::SparseAppend : "<<GetFilename()<<std::endl;
+      s = AllocateNewZone(GetFilename());
       if (!s.ok()) return s;
     }
   }
@@ -623,7 +653,8 @@ IOStatus ZoneFile::Append(void* data, int data_size) {
 
   //检查是否有一个活动的zone 如果没有就要分配一个
   if (!active_zone_) {
-    s = AllocateNewZone();
+    std::cout<<"dz ZoneFile::Append: "<<GetFilename()<<std::endl;
+    s = AllocateNewZone(GetFilename());
     if (!s.ok()) return s;
   }
   //
@@ -635,8 +666,8 @@ IOStatus ZoneFile::Append(void* data, int data_size) {
       if (!s.ok()) {
         return s;
       }
-
-      s = AllocateNewZone();
+      std::cout<<"dz ZoneFile::Append: "<<GetFilename()<<std::endl;
+      s = AllocateNewZone(GetFilename());
       if (!s.ok()) return s;
     }
 

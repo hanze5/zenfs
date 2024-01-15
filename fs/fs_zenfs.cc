@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <iostream>
 
 #include <set>
 #include <sstream>
@@ -644,15 +645,15 @@ inline bool ends_with(std::string const& value, std::string const& ending) {
   return std::equal(ending.rbegin(), ending.rend(), value.rbegin());
 }
 
-//创建一个科协文件
+//创建一个可写文件
 IOStatus ZenFS::NewWritableFile(const std::string& filename,
                                 const FileOptions& file_opts,
                                 std::unique_ptr<FSWritableFile>* result,
                                 IODebugContext* /*dbg*/) {
   std::string fname = FormatPathLexically(filename);
+  // std::cout<<"dz ZenFS::NewWritableFile: 创建了可写文件"<<filename<<std::endl;
   Debug(logger_, "New writable file: %s direct: %d\n", fname.c_str(),
         file_opts.use_direct_writes);
-
   return OpenWritableFile(fname, file_opts, result, nullptr, false);
 }
 
@@ -1825,6 +1826,7 @@ IOStatus ZenFS::MigrateExtents(
   return s;
 }
 
+
 //迁移file extent
 IOStatus ZenFS::MigrateFileExtents(
     const std::string& fname,
@@ -1838,7 +1840,8 @@ IOStatus ZenFS::MigrateFileExtents(
   if (zfile == nullptr) {
     return IOStatus::OK();
   }
-
+  std::string db_name = ExtractSecondToLastDirName(fname);
+  std::cout<<"dz ZenFS::MigrateFileExtents: db_name is "<<db_name<<std::endl;
   // Don't migrate open for write files and prevent write reopens while we
   // migrate
   if (!zfile->TryAcquireWRLock()) {
@@ -1868,9 +1871,9 @@ IOStatus ZenFS::MigrateFileExtents(
 
     Zone* target_zone = nullptr;
 
-    // Allocate a new migration zone.
+    // Allocate a new migration zone. dz modified
     s = zbd_->TakeMigrateZone(&target_zone, zfile->GetWriteLifeTimeHint(),
-                              ext->length_);
+                              ext->length_,fname);
     if (!s.ok()) {
       continue;
     }

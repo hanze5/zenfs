@@ -36,6 +36,7 @@ class ZonedBlockDevice;         //用于处理分区块设备的类。
 class ZonedBlockDeviceBackend;  //用于处理分区块设备后端的类。
 class ZoneSnapshot;             //用于处理区域快照的类。
 class ZenFSSnapshotOptions;     //用于处理 ZenFS 快照选项的类。
+std::string ExtractSecondToLastDirName(const std::string& file_path);
 
 //我也不知道是个什么东西反正包含了 void *data_ 以及 int zone_count_
 class ZoneList {
@@ -235,6 +236,13 @@ class ZonedBlockDevice {
   };
   uint64_t GetTotalBytesWritten() { return bytes_written_.load(); };
 
+  //dz added:
+  //增加两个函数的重载
+  IOStatus TakeMigrateZone(Zone **out_zone, Env::WriteLifeTimeHint lifetime,
+                           uint32_t min_capacity,std::string fname);//在需要迁移区域时，获取最佳的开放区域进行迁移
+  IOStatus AllocateIOZone(Env::WriteLifeTimeHint file_lifetime, IOType io_type,
+                          Zone **out_zone,std::string fname);
+
  private:
   IOStatus GetZoneDeferredStatus();  
   bool GetActiveIOZoneTokenIfAvailable();        //获取IOZone 活动令牌
@@ -244,7 +252,17 @@ class ZonedBlockDevice {
   IOStatus GetBestOpenZoneMatch(Env::WriteLifeTimeHint file_lifetime,//最合适的就是已被使用了但是不满且剩余容量满足输入参数要求
                                 unsigned int *best_diff_out, Zone **zone_out,
                                 uint32_t min_capacity = 0);
+
   IOStatus AllocateEmptyZone(Zone **zone_out);   //就从头开始找分配第一个空的
+  
+  //dz added：
+  //增加三函数的重载
+  IOStatus FinishCheapestIOZone(std::string fname);
+  IOStatus GetBestOpenZoneMatch(Env::WriteLifeTimeHint file_lifetime,//最合适的就是已被使用了但是不满且剩余容量满足输入参数要求
+                                unsigned int *best_diff_out, Zone **zone_out,std::string fname,
+                                uint32_t min_capacity = 0);
+  IOStatus AllocateEmptyZone(Zone **zone_out,std::string fname);   //就从头开始找分配第一个空的
+
 };
 
 }  // namespace ROCKSDB_NAMESPACE

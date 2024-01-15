@@ -40,8 +40,9 @@
  * Two non-offline meta zones are needed to be able
  * to roll the metadata log safely. One extra
  * is allocated to cover for one zone going offline.
+ * dz modified
  */
-#define ZENFS_META_ZONES (3)
+#define ZENFS_META_ZONES (4)
 
 /* Minimum of number of zones that makes sense */
 #define ZENFS_MIN_ZONES (32)
@@ -612,11 +613,99 @@ IOStatus ZonedBlockDevice::FinishCheapestIOZone() {
   if (s.ok()) {
     PutActiveIOZoneToken();
   }
-
   if (!release_status.ok()) {
     return release_status;
   }
+  return s;
+}
 
+/**
+ * dz added:
+ * FinishCheapestIOZone 重载 会按照fname进行关闭 保证不会关闭其他应用的
+*/
+IOStatus ZonedBlockDevice::FinishCheapestIOZone(std:: string db_name) {
+  IOStatus s;
+  Zone *finish_victim = nullptr;
+
+  //每4个zone 各分给4个app 1个
+  int group = -1;
+  if(db_name=="1st"){
+    group=0;
+  }else if(db_name=="2nd"){
+    group=1;
+  }else if(db_name=="3rd"){
+    group=2;
+  }else if(db_name=="4th"){
+    group=3;
+  }else{
+    std::cout<<"dz ZonedBlockDevice::FinishCheapestIOZone:db_name is "+db_name<<std::endl;
+  }
+
+  if(group==-1){
+    for (const auto z : io_zones) {
+      if (z->Acquire()) {
+        if (z->IsEmpty() || z->IsFull()) {
+          s = z->CheckRelease();
+          if (!s.ok()) return s;
+          continue;
+        }
+        if (finish_victim == nullptr) {
+          finish_victim = z;
+          continue;
+        }
+        if (finish_victim->capacity_ > z->capacity_) {
+          s = finish_victim->CheckRelease();
+          if (!s.ok()) return s;
+          finish_victim = z;
+        } else {
+          s = z->CheckRelease();
+          if (!s.ok()) return s;
+        }
+      }
+    }
+  }else{
+    unsigned int zone_per_group = io_zones.size()/4;
+    size_t start = zone_per_group*group;
+    size_t end =  zone_per_group*(group+1);
+    end = end<io_zones.size()?end:io_zones.size();
+    for(size_t i = start;i<end;i++){
+      Zone * z = io_zones[i];
+      if (z->Acquire()) {
+        if (z->IsEmpty() || z->IsFull()) {
+          s = z->CheckRelease();
+          if (!s.ok()) return s;
+          continue;
+        }
+        if (finish_victim == nullptr) {
+          finish_victim = z;
+          continue;
+        }
+        if (finish_victim->capacity_ > z->capacity_) {
+          s = finish_victim->CheckRelease();
+          if (!s.ok()) return s;
+          finish_victim = z;
+        } else {
+          s = z->CheckRelease();
+          if (!s.ok()) return s;
+        }
+      }
+    }
+  }
+  // If all non-busy zones are empty or full, we should return success.
+  if (finish_victim == nullptr) {
+    Info(logger_, "All non-busy zones are empty or full, skip.");
+    return IOStatus::OK();
+  }
+
+  s = finish_victim->Finish();
+  IOStatus release_status = finish_victim->CheckRelease();
+
+  if (s.ok()) {
+    PutActiveIOZoneToken();
+  }
+  if (!release_status.ok()) {
+    return release_status;
+  }
   return s;
 }
 
@@ -660,6 +749,96 @@ IOStatus ZonedBlockDevice::GetBestOpenZoneMatch(
   return IOStatus::OK();
 }
 
+/**
+ * dz added：
+ * GetBestOpenZoneMatch函数重载 使之隔离app
+*/
+IOStatus ZonedBlockDevice::GetBestOpenZoneMatch(
+    Env::WriteLifeTimeHint file_lifetime, unsigned int *best_diff_out,
+    Zone **zone_out,std::string db_name, uint32_t min_capacity) {
+  unsigned int best_diff = LIFETIME_DIFF_NOT_GOOD;
+  Zone *allocated_zone = nullptr;
+  IOStatus s;
+  //每4个zone 各分给4个app 1个
+  int group = -1;
+  if(db_name=="1st"){
+    group=0;
+  }else if(db_name=="2nd"){
+    group=1;
+  }else if(db_name=="3rd"){
+    group=2;
+  }else if(db_name=="4th"){
+    group=3;
+  }else{
+    std::cout<<"dz ZonedBlockDevice::GetBestOpenZoneMatch :db_name is "+db_name<<std::endl;
+  }
+  if(group == -1){
+    for (const auto z : io_zones) {
+      if (z->Acquire()) {
+        if ((z->used_capacity_ > 0) && !z->IsFull() &&
+            z->capacity_ >= min_capacity) {
+          unsigned int diff = GetLifeTimeDiff(z->lifetime_, file_lifetime);
+          if (diff <= best_diff) {
+            if (allocated_zone != nullptr) {
+              s = allocated_zone->CheckRelease();
+              if (!s.ok()) {
+                IOStatus s_ = z->CheckRelease();
+                if (!s_.ok()) return s_;
+                return s;
+              }
+            }
+            allocated_zone = z;
+            best_diff = diff;
+          } else {
+            s = z->CheckRelease();
+            if (!s.ok()) return s;
+          }
+        } else {
+          s = z->CheckRelease();
+          if (!s.ok()) return s;
+        }
+      }
+    }
+    *best_diff_out = best_diff;
+    *zone_out = allocated_zone;
+  }else{
+    unsigned int zone_per_group = io_zones.size()/4;
+    size_t start = zone_per_group*group;
+    size_t end =  zone_per_group*(group+1);
+    end = end<io_zones.size()?end:io_zones.size();
+    for(size_t i = start;i<end;i++){
+      Zone * z = io_zones[i];
+      if (z->Acquire()) {
+        if ((z->used_capacity_ > 0) && !z->IsFull() &&
+            z->capacity_ >= min_capacity) {
+          unsigned int diff = GetLifeTimeDiff(z->lifetime_, file_lifetime);
+          if (diff <= best_diff) {
+            if (allocated_zone != nullptr) {
+              s = allocated_zone->CheckRelease();
+              if (!s.ok()) {
+                IOStatus s_ = z->CheckRelease();
+                if (!s_.ok()) return s_;
+                return s;
+              }
+            }
+            allocated_zone = z;
+            best_diff = diff;
+          } else {
+            s = z->CheckRelease();
+            if (!s.ok()) return s;
+          }
+        } else {
+          s = z->CheckRelease();
+          if (!s.ok()) return s;
+        }
+      }
+    }
+  }
+
+  return IOStatus::OK();
+}
+
+// TODO
 IOStatus ZonedBlockDevice::AllocateEmptyZone(Zone **zone_out) {
   IOStatus s;
   Zone *allocated_zone = nullptr;
@@ -671,6 +850,61 @@ IOStatus ZonedBlockDevice::AllocateEmptyZone(Zone **zone_out) {
       } else {
         s = z->CheckRelease();
         if (!s.ok()) return s;
+      }
+    }
+  }
+  *zone_out = allocated_zone;
+  return IOStatus::OK();
+}
+
+/**
+ * dz added
+ * 加入 AllocateEmptyZone函数的重载 根据fname找empty
+*/
+IOStatus ZonedBlockDevice::AllocateEmptyZone(Zone **zone_out,std::string db_name) {
+  IOStatus s;
+  Zone *allocated_zone = nullptr;
+  //每4个zone 各分给4个app 1个
+  int group = -1;
+  if(db_name=="1st"){
+    group=0;
+  }else if(db_name=="2nd"){
+    group=1;
+  }else if(db_name=="3rd"){
+    group=2;
+  }else if(db_name=="4th"){
+    group=3;
+  }else{
+    std::cout<<"dz ZonedBlockDevice::AllocateEmptyZone:db_name is "+db_name<<std::endl;
+  }
+
+  if(group == -1){
+    for (const auto z : io_zones) {
+      if (z->Acquire()) {
+        if (z->IsEmpty()) {
+          allocated_zone = z;
+          break;
+        } else {
+          s = z->CheckRelease();
+          if (!s.ok()) return s;
+        }
+      }
+    }
+  }else{
+    unsigned int zone_per_group = io_zones.size()/4;
+    size_t start = zone_per_group*group;
+    size_t end =  zone_per_group*(group+1);
+    end = end<io_zones.size()?end:io_zones.size();
+    for(size_t i = start;i<end;i++){
+      Zone * z = io_zones[i];
+      if (z->Acquire()) {
+        if (z->IsEmpty()) {
+          allocated_zone = z;
+          break;
+        } else {
+          s = z->CheckRelease();
+          if (!s.ok()) return s;
+        }
       }
     }
   }
@@ -746,6 +980,30 @@ IOStatus ZonedBlockDevice::TakeMigrateZone(Zone **out_zone,
   return s;
 }
 
+/**
+ * dz added:
+ * TakeMigrateZone函数重载
+*/
+IOStatus ZonedBlockDevice::TakeMigrateZone(Zone **out_zone,
+                                           Env::WriteLifeTimeHint file_lifetime,
+                                           uint32_t min_capacity,std::string db_name) {
+  std::unique_lock<std::mutex> lock(migrate_zone_mtx_);
+  migrate_resource_.wait(lock, [this] { return !migrating_; });
+
+  migrating_ = true;
+
+  unsigned int best_diff = LIFETIME_DIFF_NOT_GOOD;
+  auto s =
+      GetBestOpenZoneMatch(file_lifetime, &best_diff, out_zone,db_name, min_capacity);
+  if (s.ok() && (*out_zone) != nullptr) {
+    Info(logger_, "TakeMigrateZone: %lu", (*out_zone)->start_);
+  } else {
+    migrating_ = false;
+  }
+
+  return s;
+}
+
 IOStatus ZonedBlockDevice::AllocateIOZone(Env::WriteLifeTimeHint file_lifetime,
                                           IOType io_type, Zone **out_zone) {
   //指针将用于存储被分配的IO区域
@@ -772,9 +1030,6 @@ IOStatus ZonedBlockDevice::AllocateIOZone(Env::WriteLifeTimeHint file_lifetime,
   metrics_->ReportQPS(ZENFS_IO_ALLOC_QPS, 1);
 
   // Check if a deferred IO error was set
-  /**
-   * 
-  */
   s = GetZoneDeferredStatus();
   if (!s.ok()) {
     return s;
@@ -786,7 +1041,6 @@ IOStatus ZonedBlockDevice::AllocateIOZone(Env::WriteLifeTimeHint file_lifetime,
       return s;
     }
   }
-
   //待一个开放的IO区域令牌。如果io_type等于IOType::kWAL，则优先等待
   WaitForOpenIOZoneToken(io_type == IOType::kWAL);
 
@@ -845,6 +1099,160 @@ IOStatus ZonedBlockDevice::AllocateIOZone(Env::WriteLifeTimeHint file_lifetime,
       }
       //找一个空的
       s = AllocateEmptyZone(&allocated_zone);
+      if (!s.ok()) {
+        PutActiveIOZoneToken();
+        PutOpenIOZoneToken();
+        return s;
+      }
+
+      if (allocated_zone != nullptr) {
+        assert(allocated_zone->IsBusy());
+        //将分配的IO区域的生命周期设置为文件的生命周期
+        allocated_zone->lifetime_ = file_lifetime;
+        new_zone = true;
+      } else {
+        PutActiveIOZoneToken();
+      }
+    }
+  }
+
+  if (allocated_zone) {
+    assert(allocated_zone->IsBusy());
+    Debug(logger_,
+          "Allocating zone(new=%d) start: 0x%lx wp: 0x%lx lt: %d file lt: %d\n",
+          new_zone, allocated_zone->start_, allocated_zone->wp_,
+          allocated_zone->lifetime_, file_lifetime);
+  } else {
+    PutOpenIOZoneToken();
+  }
+
+  if (io_type != IOType::kWAL) {
+    LogZoneStats();
+  }
+
+  *out_zone = allocated_zone;
+
+  //报告当前开放的IO区域数量和活动的IO区域数量
+  metrics_->ReportGeneral(ZENFS_OPEN_ZONES_COUNT, open_io_zones_);
+  metrics_->ReportGeneral(ZENFS_ACTIVE_ZONES_COUNT, active_io_zones_);
+
+  return IOStatus::OK();
+}
+
+/**
+ * dz added：
+ * 提取db名称
+*/
+std::string ExtractSecondToLastDirName(const std::string& file_path) {
+    size_t last_slash_pos = file_path.find_last_of('/');
+    size_t second_last_slash_pos = file_path.find_last_of('/', last_slash_pos - 1);
+    if (last_slash_pos != std::string::npos && second_last_slash_pos != std::string::npos) {
+        return file_path.substr(second_last_slash_pos + 1, last_slash_pos - second_last_slash_pos - 1);
+    }
+    return ""; // 如果路径中没有足够的 '/'，返回空字符串
+}
+/**
+ * dz added:
+ * AllocateIOZone函数重载
+*/
+IOStatus ZonedBlockDevice::AllocateIOZone(Env::WriteLifeTimeHint file_lifetime,
+                                          IOType io_type, Zone **out_zone,std::string fname) {
+  //指针将用于存储被分配的IO区域
+  Zone *allocated_zone = nullptr;
+  unsigned int best_diff = LIFETIME_DIFF_NOT_GOOD;//将用于存储最佳生命周期差值
+  int new_zone = 0;
+  IOStatus s;
+
+  std::string db_name = ExtractSecondToLastDirName(fname);
+  std::cout<<"dz ZonedBlockDevice::AllocateIOZone: db_name is "<<db_name<<std::endl;
+
+  auto tag = ZENFS_WAL_IO_ALLOC_LATENCY;    //用于标记io分配的延迟类型
+  //检查IO类型是否不等于IOType::kWAL。如果不等于，那么根据文件的生命周期，将tag设置为ZENFS_L0_IO_ALLOC_LATENCY或ZENFS_NON_WAL_IO_ALLOC_LATENCY
+  if (io_type != IOType::kWAL) {
+    // L0 flushes have lifetime MEDIUM
+    if (file_lifetime == Env::WLTH_MEDIUM) {
+      tag = ZENFS_L0_IO_ALLOC_LATENCY;
+    } else {
+      tag = ZENFS_NON_WAL_IO_ALLOC_LATENCY;
+    }
+  }
+  //用于监控IO分配的延迟
+  ZenFSMetricsLatencyGuard guard(metrics_, tag, Env::Default());
+  /**
+   * 调用metrics_的ReportQPS方法，报告每秒查询数（QPS）
+  */
+  metrics_->ReportQPS(ZENFS_IO_ALLOC_QPS, 1);
+
+  // Check if a deferred IO error was set
+  s = GetZoneDeferredStatus();
+  if (!s.ok()) {
+    return s;
+  }
+
+  if (io_type != IOType::kWAL) {
+    s = ApplyFinishThreshold();
+    if (!s.ok()) {
+      return s;
+    }
+  }
+  //待一个开放的IO区域令牌。如果io_type等于IOType::kWAL，则优先等待
+  WaitForOpenIOZoneToken(io_type == IOType::kWAL);
+
+  /* Try to fill an already open zone(with the best life time diff) */
+  /* 尝试找到一个已经打开的区域（具有最佳生命周期差异）*/
+  s = GetBestOpenZoneMatch(file_lifetime, &best_diff, &allocated_zone,db_name);
+  if (!s.ok()) {
+    PutOpenIOZoneToken();
+    return s;
+  }
+
+  // Holding allocated_zone if != nullptr
+  //判断当前的生命周期差异是否超过了一个可接受的范围。如果超过了这个范围，那么可能需要进行一些额外的操作，比如选择一个新的IO区域进行写入。
+  if (best_diff >= LIFETIME_DIFF_COULD_BE_WORSE) {
+    //尝试获取一个可用的活动IO区域令牌，如果获取成功，got_token为真
+    bool got_token = GetActiveIOZoneTokenIfAvailable();
+
+    /* If we did not get a token, try to use the best match, even if the life
+     * time diff not good but a better choice than to finish an existing zone
+     * and open a new one
+     * 如果我们没有获取到令牌，我们会尝试使用最佳匹配的区域，即使这个区域的生命周期差异不理想。
+     * 这样做比结束一个已经存在的区域并开启一个新的区域要好。
+     * 这是因为结束一个已经存在的区域并开启一个新的区域会消耗更多的资源和时间。
+     * 因此，即使生命周期差异不理想，使用最佳匹配的区域仍然是一个更好的选择
+     */
+    if (allocated_zone != nullptr) {
+      if (!got_token && best_diff == LIFETIME_DIFF_COULD_BE_WORSE) {
+        Debug(logger_,
+              "Allocator: avoided a finish by relaxing lifetime diff "
+              "requirement\n");
+      } else {
+        //查分配的IO区域是否可以被释放，并将结果存储在变量s中。
+        s = allocated_zone->CheckRelease();
+        if (!s.ok()) {
+          PutOpenIOZoneToken();
+          if (got_token) PutActiveIOZoneToken();
+          return s;
+        }
+        allocated_zone = nullptr;
+      }
+    }
+
+    /* If we haven't found an open zone to fill, open a new zone */
+    if (allocated_zone == nullptr) {
+      /* We have to make sure we can open an empty zone */
+      /**
+       * 只要没有获取到令牌并且没有可用的活动IO区域令牌，就会执行循环体中的代码。
+       * 循环体中的代码主要是尝试结束最便宜的IO区域，并在结束失败时返回错误状态
+      */
+      while (!got_token && !GetActiveIOZoneTokenIfAvailable()) {
+        s = FinishCheapestIOZone(db_name);
+        if (!s.ok()) {
+          PutOpenIOZoneToken();
+          return s;
+        }
+      }
+      //找一个空的
+      s = AllocateEmptyZone(&allocated_zone,db_name);
       if (!s.ok()) {
         PutActiveIOZoneToken();
         PutOpenIOZoneToken();

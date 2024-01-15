@@ -85,6 +85,8 @@ class ZoneFile {
  public:
   static const int SPARSE_HEADER_SIZE = 8;//可能表示的是稀疏文件头部信息的大小
 
+  
+  //dz modified
   explicit ZoneFile(ZonedBlockDevice* zbd, uint64_t file_id_,
                     MetadataWriter* metadata_writer);
 
@@ -121,6 +123,8 @@ class ZoneFile {
   ZoneExtent* GetExtent(uint64_t file_offset, uint64_t* dev_offset);//获取与给定文件偏移量对应的extent
   void PushExtent(); //它用于将新的extent添加到extents_列表中 一般就是有新数据要写入需要开辟空间了
   IOStatus AllocateNewZone();
+
+  IOStatus AllocateNewZone(std::string filename);
 
   void EncodeTo(std::string* output, uint32_t extent_start);//它将ZoneFile对象的状态编码到一个字符串中
   void EncodeUpdateTo(std::string* output) {
