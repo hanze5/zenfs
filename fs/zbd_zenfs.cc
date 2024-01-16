@@ -44,8 +44,10 @@
  */
 #define ZENFS_META_ZONES (4)
 
+#define WORKLOADS_NUM (4)
+
 /* Minimum of number of zones that makes sense */
-#define ZENFS_MIN_ZONES (32)
+#define ZENFS_MIN_ZONES (32*4)
 
 namespace ROCKSDB_NAMESPACE {
 
