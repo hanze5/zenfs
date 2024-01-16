@@ -237,11 +237,12 @@ class ZonedBlockDevice {
   uint64_t GetTotalBytesWritten() { return bytes_written_.load(); };
 
   //dz added:
-  //增加两个函数的重载
+  //增加三个函数的重载
   IOStatus TakeMigrateZone(Zone **out_zone, Env::WriteLifeTimeHint lifetime,
                            uint32_t min_capacity,std::string fname);//在需要迁移区域时，获取最佳的开放区域进行迁移
   IOStatus AllocateIOZone(Env::WriteLifeTimeHint file_lifetime, IOType io_type,
                           Zone **out_zone,std::string fname);
+  IOStatus AllocateMetaZone(Zone **out_meta_zone,std::string fname);//这个好像是随便分的 只要前几个zone没有被使用就行
 
  private:
   IOStatus GetZoneDeferredStatus();  
