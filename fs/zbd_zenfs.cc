@@ -42,10 +42,12 @@
  * is allocated to cover for one zone going offline.
  * dz modified
  */
-#define ZENFS_META_ZONES (4)
+#define ZENFS_META_ZONES (3)
 
-/* Minimum of number of zones that makes sense */
-#define ZENFS_MIN_ZONES (32)
+#define WORKLOADS_NUM (4)
+
+/* Minimum of number of zones that makes sense dz added 保证每个工作负载都有32个*/
+#define ZENFS_MIN_ZONES (32*4)
 
 namespace ROCKSDB_NAMESPACE {
 
@@ -193,7 +195,7 @@ IOStatus ZonedBlockDevice::Open(bool readonly, bool exclusive) {
   unsigned int max_nr_open_zones;     //最大 open zone数
   Status s;                           //rocksdb里面表示状态的类
   uint64_t i = 0;                     
-  uint64_t m = 0;
+  uint64_t m;
   // Reserve one zone for metadata and another one for extent migration
   /**
    * 它提到了为元数据和迁移扩展分别保留一个区域。
@@ -238,45 +240,48 @@ IOStatus ZonedBlockDevice::Open(bool readonly, bool exclusive) {
     return IOStatus::IOError("Failed to list zones");
   }
 
-  //就前三个zone当元数据zone
-  while (m < ZENFS_META_ZONES && i < zone_rep->ZoneCount()) {
-    /* Only use sequential write required zones */
-    if (zbd_be_->ZoneIsSwr(zone_rep, i)) {
-      if (!zbd_be_->ZoneIsOffline(zone_rep, i)) {
-        //
-        meta_zones.push_back(new Zone(this, zbd_be_.get(), zone_rep, i));
-      }
-      m++;
-    }
-    i++;
-  }
-
   active_io_zones_ = 0;
   open_io_zones_ = 0;
 
-  for (; i < zone_rep->ZoneCount(); i++) {
-    /* Only use sequential write required zones */
-    if (zbd_be_->ZoneIsSwr(zone_rep, i)) {
-      if (!zbd_be_->ZoneIsOffline(zone_rep, i)) {
-        Zone *newZone = new Zone(this, zbd_be_.get(), zone_rep, i);
-        if (!newZone->Acquire()) {
-          assert(false);
-          return IOStatus::Corruption("Failed to set busy flag of zone " +
-                                      std::to_string(newZone->GetZoneNr()));
+  for(uint64_t j = 0;j<WORKLOADS_NUM;j++)
+  {
+    m = 0;
+    //就前三个zone当元数据zone
+    while (m < ZENFS_META_ZONES && i < (j+1)*(zone_rep->ZoneCount()/WORKLOADS_NUM)) {
+      /* Only use sequential write required zones */
+      if (zbd_be_->ZoneIsSwr(zone_rep, i)) {
+        if (!zbd_be_->ZoneIsOffline(zone_rep, i)) {
+          //
+          meta_zones.push_back(new Zone(this, zbd_be_.get(), zone_rep, i));
         }
-        //
-        io_zones.push_back(newZone);
-        if (zbd_be_->ZoneIsActive(zone_rep, i)) {
-          active_io_zones_++;
-          if (zbd_be_->ZoneIsOpen(zone_rep, i)) {
-            if (!readonly) {
-              newZone->Close();
+        m++;
+      }
+      i++;
+    }
+    for (; i <(j+1)*(zone_rep->ZoneCount()/WORKLOADS_NUM); i++) {
+      /* Only use sequential write required zones */
+      if (zbd_be_->ZoneIsSwr(zone_rep, i)) {
+        if (!zbd_be_->ZoneIsOffline(zone_rep, i)) {
+          Zone *newZone = new Zone(this, zbd_be_.get(), zone_rep, i);
+          if (!newZone->Acquire()) {
+            assert(false);
+            return IOStatus::Corruption("Failed to set busy flag of zone " +
+                                        std::to_string(newZone->GetZoneNr()));
+          }
+          //
+          io_zones.push_back(newZone);
+          if (zbd_be_->ZoneIsActive(zone_rep, i)) {
+            active_io_zones_++;
+            if (zbd_be_->ZoneIsOpen(zone_rep, i)) {
+              if (!readonly) {
+                newZone->Close();
+              }
             }
           }
-        }
-        IOStatus status = newZone->CheckRelease();
-        if (!status.ok()) {
-          return status;
+          IOStatus status = newZone->CheckRelease();
+          if (!status.ok()) {
+            return status;
+          }
         }
       }
     }
@@ -431,7 +436,49 @@ unsigned int GetLifeTimeDiff(Env::WriteLifeTimeHint zone_lifetime,
   return LIFETIME_DIFF_NOT_GOOD;
 }
 
-IOStatus ZonedBlockDevice::AllocateMetaZone(Zone **out_meta_zone) {
+IOStatus ZonedBlockDevice::AllocateMetaZone(Zone **out_meta_zone) { 
+  assert(out_meta_zone);
+  *out_meta_zone = nullptr;
+  ZenFSMetricsLatencyGuard guard(metrics_, ZENFS_META_ALLOC_LATENCY,
+                                 Env::Default());
+  metrics_->ReportQPS(ZENFS_META_ALLOC_QPS, 1);
+
+  for (const auto z : meta_zones) {
+    /* If the zone is not used, reset and use it */
+    if (z->Acquire()) {
+      if (!z->IsUsed()) {
+        if (!z->IsEmpty() && !z->Reset().ok()) {
+          Warn(logger_, "Failed resetting zone!");
+          IOStatus status = z->CheckRelease();
+          if (!status.ok()) return status;
+          continue;
+        }
+        *out_meta_zone = z;
+        return IOStatus::OK();
+      }
+    }
+  }
+  assert(true);
+  Error(logger_, "Out of metadata zones, we should go to read only now.");
+  return IOStatus::NoSpace("Out of metadata zones");
+}
+/**
+ * dz added：
+ * 提取db名称
+*/
+std::string ExtractSecondToLastDirName(const std::string& file_path) {
+    size_t last_slash_pos = file_path.find_last_of('/');
+    size_t second_last_slash_pos = file_path.find_last_of('/', last_slash_pos - 1);
+    if (last_slash_pos != std::string::npos && second_last_slash_pos != std::string::npos) {
+        return file_path.substr(second_last_slash_pos + 1, last_slash_pos - second_last_slash_pos - 1);
+    }
+    return ""; // 如果路径中没有足够的 '/'，返回空字符串
+}
+/**
+ * dz added:
+ * AllocateMetaZone 重载  源文件也要分开放 每个工作负载两个zone源文件zone
+*/
+IOStatus ZonedBlockDevice::AllocateMetaZone(Zone **out_meta_zone,std::string fname) { 
   assert(out_meta_zone);
   *out_meta_zone = nullptr;
   ZenFSMetricsLatencyGuard guard(metrics_, ZENFS_META_ALLOC_LATENCY,
@@ -1139,18 +1186,7 @@ IOStatus ZonedBlockDevice::AllocateIOZone(Env::WriteLifeTimeHint file_lifetime,
   return IOStatus::OK();
 }
 
-/**
- * dz added：
- * 提取db名称
-*/
-std::string ExtractSecondToLastDirName(const std::string& file_path) {
-    size_t last_slash_pos = file_path.find_last_of('/');
-    size_t second_last_slash_pos = file_path.find_last_of('/', last_slash_pos - 1);
-    if (last_slash_pos != std::string::npos && second_last_slash_pos != std::string::npos) {
-        return file_path.substr(second_last_slash_pos + 1, last_slash_pos - second_last_slash_pos - 1);
-    }
-    return ""; // 如果路径中没有足够的 '/'，返回空字符串
-}
+
 /**
  * dz added:
  * AllocateIOZone函数重载
