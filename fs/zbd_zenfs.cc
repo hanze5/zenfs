@@ -40,9 +40,9 @@
  * Two non-offline meta zones are needed to be able
  * to roll the metadata log safely. One extra
  * is allocated to cover for one zone going offline.
- * dz modified
+ * dz modified  正常应该是3 这里改成2了 因为打算让每个工作负载都分两个 均匀一些 虽然是共用
  */
-#define ZENFS_META_ZONES (3)
+#define ZENFS_META_ZONES (4)
 
 #define WORKLOADS_NUM (4)
 
@@ -195,7 +195,7 @@ IOStatus ZonedBlockDevice::Open(bool readonly, bool exclusive) {
   unsigned int max_nr_open_zones;     //最大 open zone数
   Status s;                           //rocksdb里面表示状态的类
   uint64_t i = 0;                     
-  uint64_t m;
+  uint64_t m = 0;
   // Reserve one zone for metadata and another one for extent migration
   /**
    * 它提到了为元数据和迁移扩展分别保留一个区域。
@@ -208,6 +208,25 @@ IOStatus ZonedBlockDevice::Open(bool readonly, bool exclusive) {
   //写操作打开zone必须是独占
   if (!readonly && !exclusive)
     return IOStatus::InvalidArgument("Write opens must be exclusive");
+
+  //希望以
+  std::cout<<"希望以";
+  if(readonly){
+    std::cout<<" 只读 ";
+  }
+  else{
+    std::cout<<" 非只读 ";
+  }
+
+  if(exclusive){
+    std::cout<<" 独占 ";
+  }
+  else{
+    std::cout<<" 非独占 ";
+  }
+  std::cout<<"的方式打开dbd设备"<<std::endl;
+
+  // exclusive = false; //如果强制使用非独占
 
   IOStatus ios = zbd_be_->Open(readonly, exclusive, &max_nr_active_zones,
                                &max_nr_open_zones);
@@ -230,7 +249,7 @@ IOStatus ZonedBlockDevice::Open(bool readonly, bool exclusive) {
     max_nr_open_io_zones_ = zbd_be_->GetNrZones();
   else
     max_nr_open_io_zones_ = max_nr_open_zones - reserved_zones;
-
+  std::cout<<"Zone block device nr zones: "<<zbd_be_->GetNrZones()<<" max active: "<<max_nr_active_io_zones_<<" max open: "<<max_nr_open_io_zones_<<std::endl;
   Info(logger_, "Zone block device nr zones: %u max active: %u max open: %u \n",
        zbd_be_->GetNrZones(), max_nr_active_zones, max_nr_open_zones);
 
@@ -243,22 +262,18 @@ IOStatus ZonedBlockDevice::Open(bool readonly, bool exclusive) {
   active_io_zones_ = 0;
   open_io_zones_ = 0;
 
-  for(uint64_t j = 0;j<WORKLOADS_NUM;j++)
-  {
-    m = 0;
-    //就前三个zone当元数据zone
-    while (m < ZENFS_META_ZONES && i < (j+1)*(zone_rep->ZoneCount()/WORKLOADS_NUM)) {
-      /* Only use sequential write required zones */
-      if (zbd_be_->ZoneIsSwr(zone_rep, i)) {
-        if (!zbd_be_->ZoneIsOffline(zone_rep, i)) {
-          //
-          meta_zones.push_back(new Zone(this, zbd_be_.get(), zone_rep, i));
-        }
-        m++;
+  while (m < ZENFS_META_ZONES && i < zone_rep->ZoneCount()) {
+    /* Only use sequential write required zones */
+    if (zbd_be_->ZoneIsSwr(zone_rep, i)) {
+      if (!zbd_be_->ZoneIsOffline(zone_rep, i)) {
+        meta_zones.push_back(new Zone(this, zbd_be_.get(), zone_rep, i));
+        // std::cout<<"设置zone "<<i<<" 为元数据zone"<<std::endl;
       }
-      i++;
+      m++;
     }
-    for (; i <(j+1)*(zone_rep->ZoneCount()/WORKLOADS_NUM); i++) {
+    i++;
+    
+    for (; i < m * (zone_rep->ZoneCount()/WORKLOADS_NUM) ; i++) {
       /* Only use sequential write required zones */
       if (zbd_be_->ZoneIsSwr(zone_rep, i)) {
         if (!zbd_be_->ZoneIsOffline(zone_rep, i)) {
@@ -268,8 +283,8 @@ IOStatus ZonedBlockDevice::Open(bool readonly, bool exclusive) {
             return IOStatus::Corruption("Failed to set busy flag of zone " +
                                         std::to_string(newZone->GetZoneNr()));
           }
-          //
           io_zones.push_back(newZone);
+          // std::cout<<"设置zone "<<i<<" 为io zone"<<std::endl;
           if (zbd_be_->ZoneIsActive(zone_rep, i)) {
             active_io_zones_++;
             if (zbd_be_->ZoneIsOpen(zone_rep, i)) {
@@ -286,6 +301,47 @@ IOStatus ZonedBlockDevice::Open(bool readonly, bool exclusive) {
       }
     }
   }
+
+  // while (m < ZENFS_META_ZONES && i < zone_rep->ZoneCount()) {
+  //   /* Only use sequential write required zones */
+  //   if (zbd_be_->ZoneIsSwr(zone_rep, i)) {
+  //     if (!zbd_be_->ZoneIsOffline(zone_rep, i)) {
+  //       meta_zones.push_back(new Zone(this, zbd_be_.get(), zone_rep, i));
+  //       std::cout<<"设置zone "<<i<<" 为元数据zone"<<std::endl;
+  //     }
+  //     m++;
+  //   }
+  //   i++;
+  // }
+
+  // for (; i < zone_rep->ZoneCount(); i++) {
+  //   /* Only use sequential write required zones */
+  //   if (zbd_be_->ZoneIsSwr(zone_rep, i)) {
+  //     if (!zbd_be_->ZoneIsOffline(zone_rep, i)) {
+  //       Zone *newZone = new Zone(this, zbd_be_.get(), zone_rep, i);
+  //       if (!newZone->Acquire()) {
+  //         assert(false);
+  //         return IOStatus::Corruption("Failed to set busy flag of zone " +
+  //                                     std::to_string(newZone->GetZoneNr()));
+  //       }
+  //       io_zones.push_back(newZone);
+  //       std::cout<<"设置zone "<<i<<" 为io zone"<<std::endl;
+  //       if (zbd_be_->ZoneIsActive(zone_rep, i)) {
+  //         active_io_zones_++;
+  //         if (zbd_be_->ZoneIsOpen(zone_rep, i)) {
+  //           if (!readonly) {
+  //             newZone->Close();
+  //           }
+  //         }
+  //       }
+  //       IOStatus status = newZone->CheckRelease();
+  //       if (!status.ok()) {
+  //         return status;
+  //       }
+  //     }
+  //   }
+  // }
+
 
   start_time_ = time(NULL);
 
@@ -442,7 +498,7 @@ IOStatus ZonedBlockDevice::AllocateMetaZone(Zone **out_meta_zone) {
   ZenFSMetricsLatencyGuard guard(metrics_, ZENFS_META_ALLOC_LATENCY,
                                  Env::Default());
   metrics_->ReportQPS(ZENFS_META_ALLOC_QPS, 1);
-
+  std::cout<<"dz ZonedBlockDevice::AllocateMetaZone :元数据区域共有"<<meta_zones.size()<<std::endl;
   for (const auto z : meta_zones) {
     /* If the zone is not used, reset and use it */
     if (z->Acquire()) {
@@ -485,21 +541,62 @@ IOStatus ZonedBlockDevice::AllocateMetaZone(Zone **out_meta_zone,std::string fna
                                  Env::Default());
   metrics_->ReportQPS(ZENFS_META_ALLOC_QPS, 1);
 
-  for (const auto z : meta_zones) {
-    /* If the zone is not used, reset and use it */
-    if (z->Acquire()) {
-      if (!z->IsUsed()) {
-        if (!z->IsEmpty() && !z->Reset().ok()) {
-          Warn(logger_, "Failed resetting zone!");
-          IOStatus status = z->CheckRelease();
-          if (!status.ok()) return status;
-          continue;
+  std::string db_name = ExtractSecondToLastDirName(fname);
+
+
+  //每4个zone 各分给4个app 1个
+  int group = -1;
+  if(db_name=="0"){
+    group=0;
+  }else if(db_name=="1"){
+    group=1;
+  }else if(db_name=="2"){
+    group=2;
+  }else if(db_name=="3"){
+    group=3;
+  }else{
+    std::cout<<"dz ZonedBlockDevice::AllocateMetaZone: db_name is "<<db_name<<std::endl;
+  }
+
+  if(group == -1){
+    for (const auto z : meta_zones) {
+      /* If the zone is not used, reset and use it */
+      if (z->Acquire()) {
+        if (!z->IsUsed()) {
+          if (!z->IsEmpty() && !z->Reset().ok()) {
+            Warn(logger_, "Failed resetting zone!");
+            IOStatus status = z->CheckRelease();
+            if (!status.ok()) return status;
+            continue;
+          }
+          *out_meta_zone = z;
+          return IOStatus::OK();
         }
-        *out_meta_zone = z;
-        return IOStatus::OK();
+      }
+    }
+  }else{
+    unsigned int zone_per_group = meta_zones.size()/4;
+    size_t start = zone_per_group*group;
+    size_t end =  zone_per_group*(group+1);
+    end = end<meta_zones.size()?end:meta_zones.size();
+    for (size_t i = start;i<end;i++) {
+      Zone * z = meta_zones[i];
+      /* If the zone is not used, reset and use it */
+      if (z->Acquire()) {
+        if (!z->IsUsed()) {
+          if (!z->IsEmpty() && !z->Reset().ok()) {
+            Warn(logger_, "Failed resetting zone!");
+            IOStatus status = z->CheckRelease();
+            if (!status.ok()) return status;
+            continue;
+          }
+          *out_meta_zone = z;
+          return IOStatus::OK();
+        }
       }
     }
   }
+
   assert(true);
   Error(logger_, "Out of metadata zones, we should go to read only now.");
   return IOStatus::NoSpace("Out of metadata zones");
@@ -676,13 +773,13 @@ IOStatus ZonedBlockDevice::FinishCheapestIOZone(std:: string db_name) {
 
   //每4个zone 各分给4个app 1个
   int group = -1;
-  if(db_name=="1st"){
+  if(db_name=="0"){
     group=0;
-  }else if(db_name=="2nd"){
+  }else if(db_name=="1"){
     group=1;
-  }else if(db_name=="3rd"){
+  }else if(db_name=="2"){
     group=2;
-  }else if(db_name=="4th"){
+  }else if(db_name=="3"){
     group=3;
   }else{
     std::cout<<"dz ZonedBlockDevice::FinishCheapestIOZone:db_name is "+db_name<<std::endl;
@@ -806,15 +903,15 @@ IOStatus ZonedBlockDevice::GetBestOpenZoneMatch(
   unsigned int best_diff = LIFETIME_DIFF_NOT_GOOD;
   Zone *allocated_zone = nullptr;
   IOStatus s;
-  //每4个zone 各分给4个app 1个
+
   int group = -1;
-  if(db_name=="1st"){
+  if(db_name=="0"){
     group=0;
-  }else if(db_name=="2nd"){
+  }else if(db_name=="1"){
     group=1;
-  }else if(db_name=="3rd"){
+  }else if(db_name=="2"){
     group=2;
-  }else if(db_name=="4th"){
+  }else if(db_name=="3"){
     group=3;
   }else{
     std::cout<<"dz ZonedBlockDevice::GetBestOpenZoneMatch :db_name is "+db_name<<std::endl;
@@ -846,8 +943,6 @@ IOStatus ZonedBlockDevice::GetBestOpenZoneMatch(
         }
       }
     }
-    *best_diff_out = best_diff;
-    *zone_out = allocated_zone;
   }else{
     unsigned int zone_per_group = io_zones.size()/4;
     size_t start = zone_per_group*group;
@@ -881,7 +976,8 @@ IOStatus ZonedBlockDevice::GetBestOpenZoneMatch(
       }
     }
   }
-
+  *best_diff_out = best_diff;
+  *zone_out = allocated_zone;
   return IOStatus::OK();
 }
 
@@ -913,13 +1009,13 @@ IOStatus ZonedBlockDevice::AllocateEmptyZone(Zone **zone_out,std::string db_name
   Zone *allocated_zone = nullptr;
   //每4个zone 各分给4个app 1个
   int group = -1;
-  if(db_name=="1st"){
+  if(db_name=="0"){
     group=0;
-  }else if(db_name=="2nd"){
+  }else if(db_name=="1"){
     group=1;
-  }else if(db_name=="3rd"){
+  }else if(db_name=="2"){
     group=2;
-  }else if(db_name=="4th"){
+  }else if(db_name=="3"){
     group=3;
   }else{
     std::cout<<"dz ZonedBlockDevice::AllocateEmptyZone:db_name is "+db_name<<std::endl;

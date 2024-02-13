@@ -72,7 +72,7 @@ IOStatus ZbdlibBackend::Open(bool readonly, bool exclusive,
   } else {
     read_f_ = zbd_open(filename_.c_str(), O_RDONLY, &info);
   }
-
+ 
   if (read_f_ < 0) {
     return IOStatus::InvalidArgument(
         "Failed to open zoned block device for read: " + ErrorToString(errno));

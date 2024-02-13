@@ -535,7 +535,7 @@ IOStatus ZoneFile::BufferedAppend(char* buffer, uint32_t data_size) {
   IOStatus s;
   //如果没有活动区域那么将尝试分配一个
   if (active_zone_ == NULL) {
-    std::cout<<"dz ZoneFile::BufferedAppend : "<<GetFilename()<<std::endl;
+    std::cout<<"dz ZoneFile::BufferedAppend 且 没有active_zone_  : "<<GetFilename()<<std::endl;
     s = AllocateNewZone(GetFilename());
     if (!s.ok()) return s;
   }
@@ -574,7 +574,7 @@ IOStatus ZoneFile::BufferedAppend(char* buffer, uint32_t data_size) {
       if (left) {
         memmove((void*)(buffer), (void*)(buffer + wr_size), left);
       }
-      std::cout<<"dz ZoneFile::BufferedAppend : "<<GetFilename()<<std::endl;
+      std::cout<<"dz ZoneFile::BufferedAppend 且用完了zone: "<<GetFilename()<<std::endl;
       s = AllocateNewZone(GetFilename());
       if (!s.ok()) return s;
     }

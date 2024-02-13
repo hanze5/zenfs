@@ -1392,7 +1392,7 @@ Status ZenFS::Mount(bool readonly) {
           "Need at least two non-offline meta zones to open for write");
     return Status::NotSupported();
   }
-
+  // int count = 0;
   /* Find all valid superblocks 在元数据目录中找到所有的超级块*/
   for (const auto z : metazones) {
     std::unique_ptr<ZenMetaLog> log;
