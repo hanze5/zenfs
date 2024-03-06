@@ -487,7 +487,8 @@ unsigned int GetLifeTimeDiff(Env::WriteLifeTimeHint zone_lifetime,
   }
 
   if (zone_lifetime > file_lifetime) return zone_lifetime - file_lifetime;
-  if (zone_lifetime == file_lifetime) return LIFETIME_DIFF_COULD_BE_WORSE;
+  // if (zone_lifetime == file_lifetime) return LIFETIME_DIFF_COULD_BE_WORSE;
+  if (zone_lifetime == file_lifetime) return 0;
 
   return LIFETIME_DIFF_NOT_GOOD;
 }
@@ -893,6 +894,37 @@ IOStatus ZonedBlockDevice::GetBestOpenZoneMatch(
   return IOStatus::OK();
 }
 
+std::string writeLifeTimeHintToString(Env::WriteLifeTimeHint hint) {
+  switch (hint) {
+      case Env:: WLTH_NOT_SET:
+          return "WLTH_NOT_SET";
+      case Env:: WLTH_NONE:
+          return "WLTH_NONE";
+      case Env:: WLTH_SHORT:
+          return "WLTH_SHORT";
+      case Env:: WLTH_MEDIUM:
+          return "WLTH_MEDIUM";
+      case Env:: WLTH_LONG:
+          return "WLTH_LONG";
+      case Env:: WLTH_EXTREME:
+          return "WLTH_EXTREME";
+      case Env:: LEVEL_0:
+          return "LEVEL_0";
+      case Env:: LEVEL_1:
+          return "LEVEL_1";
+      case Env:: LEVEL_2:
+          return "LEVEL_2";
+      case Env:: LEVEL_3:
+          return "LEVEL_3";
+      case Env:: LEVEL_4:
+          return "LEVEL_4";
+      case Env:: LEVEL_5UP:
+          return "LEVEL_5UP";
+      default:
+          return "Unknown WriteLifeTimeHint";
+  }
+}
+
 /**
  * dz added：
  * GetBestOpenZoneMatch函数重载 使之隔离app
@@ -916,13 +948,15 @@ IOStatus ZonedBlockDevice::GetBestOpenZoneMatch(
   }else{
     std::cout<<"dz ZonedBlockDevice::GetBestOpenZoneMatch :db_name is "+db_name<<std::endl;
   }
+  
   if(group == -1){
     for (const auto z : io_zones) {
       if (z->Acquire()) {
         if ((z->used_capacity_ > 0) && !z->IsFull() &&
             z->capacity_ >= min_capacity) {
           unsigned int diff = GetLifeTimeDiff(z->lifetime_, file_lifetime);
-          if (diff <= best_diff) {
+          std::cout<<"dz ZonedBlockDevice::GetBestOpenZoneMatch : zone生命周期是 "+writeLifeTimeHintToString(z->lifetime_)+" file的生命周期是"+writeLifeTimeHintToString(file_lifetime)+" 差异是"<<diff<<std::endl;
+          if (diff < best_diff) {
             if (allocated_zone != nullptr) {
               s = allocated_zone->CheckRelease();
               if (!s.ok()) {
@@ -933,6 +967,7 @@ IOStatus ZonedBlockDevice::GetBestOpenZoneMatch(
             }
             allocated_zone = z;
             best_diff = diff;
+            if(best_diff==0) break;
           } else {
             s = z->CheckRelease();
             if (!s.ok()) return s;
@@ -948,13 +983,22 @@ IOStatus ZonedBlockDevice::GetBestOpenZoneMatch(
     size_t start = zone_per_group*group;
     size_t end =  zone_per_group*(group+1);
     end = end<io_zones.size()?end:io_zones.size();
+    size_t level_0_range = 8;
+
+    if(file_lifetime==Env:: LEVEL_0){
+      end = start+level_0_range;
+    }else{
+      start+=(level_0_range);
+    }
+
     for(size_t i = start;i<end;i++){
       Zone * z = io_zones[i];
       if (z->Acquire()) {
         if ((z->used_capacity_ > 0) && !z->IsFull() &&
             z->capacity_ >= min_capacity) {
           unsigned int diff = GetLifeTimeDiff(z->lifetime_, file_lifetime);
-          if (diff <= best_diff) {
+          std::cout<<"dz ZonedBlockDevice::GetBestOpenZoneMatch : zone "<<i<<" 的生命周期是 "+writeLifeTimeHintToString(z->lifetime_)+" file的生命周期是"+writeLifeTimeHintToString(file_lifetime)+" 差异是"<<diff<<std::endl;
+          if (diff < best_diff) {
             if (allocated_zone != nullptr) {
               s = allocated_zone->CheckRelease();
               if (!s.ok()) {
@@ -965,6 +1009,7 @@ IOStatus ZonedBlockDevice::GetBestOpenZoneMatch(
             }
             allocated_zone = z;
             best_diff = diff;
+            if(best_diff==0) break;
           } else {
             s = z->CheckRelease();
             if (!s.ok()) return s;
@@ -1004,7 +1049,7 @@ IOStatus ZonedBlockDevice::AllocateEmptyZone(Zone **zone_out) {
  * dz added
  * 加入 AllocateEmptyZone函数的重载 根据fname找empty
 */
-IOStatus ZonedBlockDevice::AllocateEmptyZone(Zone **zone_out,std::string db_name) {
+IOStatus ZonedBlockDevice::AllocateEmptyZone(Zone **zone_out,std::string db_name,Env::WriteLifeTimeHint file_lifetime) {
   IOStatus s;
   Zone *allocated_zone = nullptr;
   //每4个zone 各分给4个app 1个
@@ -1038,6 +1083,14 @@ IOStatus ZonedBlockDevice::AllocateEmptyZone(Zone **zone_out,std::string db_name
     size_t start = zone_per_group*group;
     size_t end =  zone_per_group*(group+1);
     end = end<io_zones.size()?end:io_zones.size();
+
+    size_t level_0_range = 8;
+    if(file_lifetime==Env:: LEVEL_0){
+      end = start+level_0_range;
+    }else{
+      start+=(level_0_range);
+    }
+
     for(size_t i = start;i<end;i++){
       Zone * z = io_zones[i];
       if (z->Acquire()) {
@@ -1384,7 +1437,7 @@ IOStatus ZonedBlockDevice::AllocateIOZone(Env::WriteLifeTimeHint file_lifetime,
         }
       }
       //找一个空的
-      s = AllocateEmptyZone(&allocated_zone,db_name);
+      s = AllocateEmptyZone(&allocated_zone,db_name,file_lifetime);
       if (!s.ok()) {
         PutActiveIOZoneToken();
         PutOpenIOZoneToken();

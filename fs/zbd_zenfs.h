@@ -262,7 +262,7 @@ class ZonedBlockDevice {
   IOStatus GetBestOpenZoneMatch(Env::WriteLifeTimeHint file_lifetime,//最合适的就是已被使用了但是不满且剩余容量满足输入参数要求
                                 unsigned int *best_diff_out, Zone **zone_out,std::string fname,
                                 uint32_t min_capacity = 0);
-  IOStatus AllocateEmptyZone(Zone **zone_out,std::string fname);   //就从头开始找分配第一个空的
+  IOStatus AllocateEmptyZone(Zone **zone_out,std::string fname,Env::WriteLifeTimeHint file_lifetime);   //就从头开始找分配第一个空的
 
 };
 

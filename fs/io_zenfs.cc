@@ -29,6 +29,8 @@
 
 namespace ROCKSDB_NAMESPACE {
 
+
+
 ZoneExtent::ZoneExtent(uint64_t start, uint64_t length, Zone* zone)
     : start_(start), length_(length), zone_(zone) {}
 
@@ -506,7 +508,7 @@ IOStatus ZoneFile::AllocateNewZone() {
 */
 IOStatus ZoneFile::AllocateNewZone(std::string filename) {
   Zone* zone;
-  std::cout<<"dz ZoneFile::AllocateNewZone:需要分配zone的文件是"<<filename<<std::endl;
+  // std::cout<<"dz ZoneFile::AllocateNewZone:需要分配zone的文件是"<<filename<<std::endl;
   //dz modified
   IOStatus s = zbd_->AllocateIOZone(lifetime_, io_type_, &zone,filename);
 
