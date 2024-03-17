@@ -543,17 +543,17 @@ IOStatus ZonedBlockDevice::AllocateMetaZone(Zone **out_meta_zone,std::string fna
   metrics_->ReportQPS(ZENFS_META_ALLOC_QPS, 1);
 
   std::string db_name = ExtractSecondToLastDirName(fname);
-
+  int number = std::stoi(db_name);
 
   //每4个zone 各分给4个app 1个
   int group = -1;
-  if(db_name=="0"){
+  if(number%4==0){
     group=0;
-  }else if(db_name=="1"){
+  }else if(number%4==1){
     group=1;
-  }else if(db_name=="2"){
+  }else if(number%4==2){
     group=2;
-  }else if(db_name=="3"){
+  }else if(number%4==3){
     group=3;
   }else{
     std::cout<<"dz ZonedBlockDevice::AllocateMetaZone: db_name is "<<db_name<<std::endl;
@@ -772,15 +772,16 @@ IOStatus ZonedBlockDevice::FinishCheapestIOZone(std:: string db_name) {
   IOStatus s;
   Zone *finish_victim = nullptr;
 
+  int number = std::stoi(db_name);
   //每4个zone 各分给4个app 1个
   int group = -1;
-  if(db_name=="0"){
+  if(number%4==0){
     group=0;
-  }else if(db_name=="1"){
+  }else if(number%4==1){
     group=1;
-  }else if(db_name=="2"){
+  }else if(number%4==2){
     group=2;
-  }else if(db_name=="3"){
+  }else if(number%4==3){
     group=3;
   }else{
     std::cout<<"dz ZonedBlockDevice::FinishCheapestIOZone:db_name is "+db_name<<std::endl;
@@ -935,15 +936,15 @@ IOStatus ZonedBlockDevice::GetBestOpenZoneMatch(
   unsigned int best_diff = LIFETIME_DIFF_NOT_GOOD;
   Zone *allocated_zone = nullptr;
   IOStatus s;
-
+  int number = std::stoi(db_name);
   int group = -1;
-  if(db_name=="0"){
+  if(number%4==0){
     group=0;
-  }else if(db_name=="1"){
+  }else if(number%4==1){
     group=1;
-  }else if(db_name=="2"){
+  }else if(number%4==2){
     group=2;
-  }else if(db_name=="3"){
+  }else if(number%4==3){
     group=3;
   }else{
     std::cout<<"dz ZonedBlockDevice::GetBestOpenZoneMatch :db_name is "+db_name<<std::endl;
@@ -983,7 +984,7 @@ IOStatus ZonedBlockDevice::GetBestOpenZoneMatch(
     size_t start = zone_per_group*group;
     size_t end =  zone_per_group*(group+1);
     end = end<io_zones.size()?end:io_zones.size();
-    size_t level_0_range = 8;
+    size_t level_0_range = 64;
 
     if(file_lifetime==Env:: LEVEL_0){
       end = start+level_0_range;
@@ -1053,14 +1054,15 @@ IOStatus ZonedBlockDevice::AllocateEmptyZone(Zone **zone_out,std::string db_name
   IOStatus s;
   Zone *allocated_zone = nullptr;
   //每4个zone 各分给4个app 1个
+  int number = std::stoi(db_name);
   int group = -1;
-  if(db_name=="0"){
+  if(number%4==0){
     group=0;
-  }else if(db_name=="1"){
+  }else if(number%4==1){
     group=1;
-  }else if(db_name=="2"){
+  }else if(number%4==2){
     group=2;
-  }else if(db_name=="3"){
+  }else if(number%4==3){
     group=3;
   }else{
     std::cout<<"dz ZonedBlockDevice::AllocateEmptyZone:db_name is "+db_name<<std::endl;
@@ -1084,7 +1086,7 @@ IOStatus ZonedBlockDevice::AllocateEmptyZone(Zone **zone_out,std::string db_name
     size_t end =  zone_per_group*(group+1);
     end = end<io_zones.size()?end:io_zones.size();
 
-    size_t level_0_range = 8;
+    size_t level_0_range = 64;
     if(file_lifetime==Env:: LEVEL_0){
       end = start+level_0_range;
     }else{
